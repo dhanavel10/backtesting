@@ -2,15 +2,27 @@
 Supertrend Intraday Backtesting Strategy
 ─────────────────────────────────────────
 LONG ENTRY  : ST is BELOW close price  (ST bull → price > ST line)
-LONG EXIT   : Price touches / crosses the ST line from above
-              (ST line acts as the dynamic stop loss)
+              AND current ST value > previous ST value  (ST line rising)
+
+LONG EXIT   — WHICHEVER TRIGGERS FIRST:
+  (A) Fixed Stop Loss       : close < entry * (1 - 0.15%)  → classified as "Stop Loss"
+  (B) ST line touch         : candle Low touches ST line   → classified as "ST Exit" (not a loss label)
+  (C) 6 Consecutive Lows    : ST line is flat (< ST_FLAT_THRESHOLD pts range over last 6 candles)
+                              AND price makes 6 consecutive lower lows → classified as "6 ConsecLow Exit"
+  (D) EOD force exit        : 15:15 IST
 
 SHORT ENTRY : ST is ABOVE close price  (ST bear → price < ST line)
-SHORT EXIT  : Price touches / crosses the ST line from below
-              (ST line acts as the dynamic stop loss)
+              AND current ST value < previous ST value  (ST line falling)
 
-ADDITIONAL EXIT:
-  - EOD force exit at 15:15 IST
+SHORT EXIT  — WHICHEVER TRIGGERS FIRST:
+  (A) Fixed Stop Loss       : close > entry * (1 + 0.15%)  → classified as "Stop Loss"
+  (B) ST line touch         : candle High touches ST line  → classified as "ST Exit" (not a loss label)
+  (C) 6 Consecutive Highs   : ST line is flat (< ST_FLAT_THRESHOLD pts range over last 6 candles)
+                              AND price makes 6 consecutive higher highs → classified as "6 ConsecHigh Exit"
+  (D) EOD force exit        : 15:15 IST
+
+NOTE: "Stop Loss" Result = LOSS only when exit price is below entry (long) / above entry (short).
+      ST Exit and Consec Exit are neutral — Result depends on exit price vs entry price.
 
 OUTPUTS:
   - Console: trade log + per-day P&L + overall P&L summary
@@ -36,7 +48,7 @@ from openpyxl import load_workbook
 #  CONFIGURATION
 # ═══════════════════════════════════════════════════════════════
 TICKER        = "^NSEI"       # ^NSEI | RELIANCE.NS | TCS.NS etc.
-INTERVAL      = "5m"         # 1m / 5m / 15m (intraday, last 60d only)
+INTERVAL      = "15m"         # 1m / 5m / 15m (intraday, last 60d only)
 PERIOD        = "60d"         # used when START=None, END=None
 START         = None          # e.g. "2026-01-25"
 END           = None          # e.g. "2026-02-23"
@@ -44,6 +56,20 @@ END           = None          # e.g. "2026-02-23"
 # Supertrend settings
 ST_PERIOD     = 10
 ST_MULTIPLIER = 3.0
+
+# ADX Entry Filter — only enter a trade when ADX is ABOVE this level
+ADX_MIN_ENTRY = 20            # wait until ADX > 25; below this = sideways/chop, no entry
+ADX_PERIOD    = 14            # ADX lookback period
+
+# Stop Loss — fixed % from entry. Only trades closed BELOW entry (long) / ABOVE entry (short)
+# are labelled "Stop Loss". ST line hits and consec-low exits are just "ST Exit" / consec exits.
+STOPLOSS_PCT        = 0.0015   # 0.15% fixed stop — price must close beyond this to count as SL
+
+# Consecutive lows/highs exit (price converging toward flat ST line)
+CONSEC_CANDLES      = 6        # number of consecutive lower lows (long) / higher highs (short)
+ST_FLAT_THRESHOLD   = 0.05     # ST line is "flat" if its range over last CONSEC_CANDLES candles
+                                # is less than this many points (tune to your instrument scale)
+                                # e.g. 0.05 for Nifty (~0.002% of 23000) — widen if too strict
 
 # Intraday session (NSE)
 MARKET_OPEN   = dtime(9, 15)
@@ -144,19 +170,39 @@ def fetch_data():
     print(f"\nFetching {TICKER} | {INTERVAL} | {rng} …")
 
     kw = dict(interval=INTERVAL, auto_adjust=True, progress=True)
-    df = (yf.download(TICKER, start=START, end=END, **kw)
-          if START and END else
-          yf.download(TICKER, period=PERIOD, **kw))
-
-    if df.empty:
+    try:
+        df = (yf.download(TICKER, start=START, end=END, **kw)
+              if START and END else
+              yf.download(TICKER, period=PERIOD, **kw))
+    except Exception as e:
         raise ValueError(
-            f"\n  ❌  No data for '{TICKER}'.\n"
-            f"      Nifty50='^NSEI'  |  Reliance='RELIANCE.NS'\n"
-            f"      Check ticker spelling and date range.\n"
+            f"\n  ❌  Download error for '{TICKER}': {e}\n"
+            f"      Try: pip install --upgrade yfinance\n"
         )
 
+    # yfinance >= 0.2.x returns MultiIndex columns — flatten them
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
+
+    # Remove any duplicate columns after flattening
+    df = df.loc[:, ~df.columns.duplicated()]
+
+    # Ensure required OHLCV columns exist
+    required = {"Open", "High", "Low", "Close", "Volume"}
+    missing  = required - set(df.columns)
+    if missing or df.empty:
+        raise ValueError(
+            f"\n  ❌  No data returned for '{TICKER}'.\n"
+            f"      Missing columns: {missing if missing else 'DataFrame is empty'}\n"
+            f"      Fixes:\n"
+            f"        • Run: pip install --upgrade yfinance\n"
+            f"        • Nifty50='^NSEI'  |  Reliance='RELIANCE.NS'\n"
+            f"        • For 5m/15m data yfinance only provides last 60 days\n"
+        )
+
+    # Keep only OHLCV — drop any extra columns yfinance may return
+    df = df[["Open", "High", "Low", "Close", "Volume"]].copy()
+    df = df.dropna(subset=["Open", "High", "Low", "Close"])
 
     df.index = pd.to_datetime(df.index)
     if df.index.tz is None:
@@ -164,6 +210,15 @@ def fetch_data():
     df.index = df.index.tz_convert(IST)
 
     df = compute_supertrend(df)
+
+    # ── ADX indicator ────────────────────────────────────────────────────
+    adx_result = ta.adx(df["High"], df["Low"], df["Close"], length=ADX_PERIOD)
+    if adx_result is not None:
+        adx_col = [c for c in adx_result.columns if c.startswith("ADX_")]
+        df["ADX"] = adx_result[adx_col[0]].values if adx_col else np.nan
+    else:
+        df["ADX"] = np.nan
+
     df.dropna(inplace=True)
     print(f"  {len(df)} candles  |  {fmt(df.index[0])} → {fmt(df.index[-1])}")
     return df
@@ -172,120 +227,222 @@ def fetch_data():
 # ───────────────────────────────────────────────────────────────
 def run_backtest(df):
     """
-    LONG  : ST bull (ST line below price) → enter at close
-            Stop Loss = current ST_val (dynamic, updates every candle)
-            Exit when: price LOW touches/crosses below ST line  OR  EOD
+    LONG  : ST bullish AND ST rising → enter at close
+    SHORT : ST bearish AND ST falling → enter at close
 
-    SHORT : ST bear (ST line above price) → enter at close
-            Stop Loss = current ST_val (dynamic, updates every candle)
-            Exit when: price HIGH touches/crosses above ST line  OR  EOD
+    EXIT priority (whichever triggers first each candle):
+      1. Fixed SL   : exit price = entry*(1±STOPLOSS_PCT)  → "Stop Loss"
+      2. ST line hit: candle Low ≤ ST (long) / High ≥ ST (short)  → "ST Exit"
+      3. Consec exit: ST is flat AND 6 consecutive lower lows (long)
+                                       / higher highs (short) → "6 ConsecLow/High Exit"
+      4. EOD        : force exit at MARKET_CLOSE  → "EOD Exit"
+
+    Stop Loss label: only when exit_price < entry (long) or exit_price > entry (short).
+    ST Exit / Consec Exit: label is neutral — WIN/LOSS decided by price vs entry.
     """
     trades = []
 
-    in_trade    = False
-    direction   = None
-    entry_price = None
-    entry_time  = None
-    entry_date  = None
-    peak        = None   # highest (long) / lowest (short)
+    in_trade         = False
+    direction        = None
+    entry_price      = None
+    entry_time       = None
+    peak             = None   # highest (long) / lowest (short) seen during trade
+    consec_count     = 0      # consecutive lower-lows (long) / higher-highs (short)
+    prev_low_trade   = None   # last candle low  tracked for consec-low counting (long)
+    prev_high_trade  = None   # last candle high tracked for consec-high counting (short)
 
     closes   = df["Close"].to_numpy(dtype=float)
     highs    = df["High"].to_numpy(dtype=float)
     lows     = df["Low"].to_numpy(dtype=float)
     st_vals  = df["ST_val"].to_numpy(dtype=float)
     st_bulls = df["ST_bull"].to_numpy(dtype=bool)
+    adx_vals = df["ADX"].to_numpy(dtype=float)
     times    = df.index
+    n        = len(df)
 
-    def record(dir_, e_time, e_price, x_time, x_price, pk, sl_at_exit, reason):
+    current_day       = None
+    first_candle_done = False
+
+    def is_st_flat(i):
+        """True if ST line range over last CONSEC_CANDLES candles is < ST_FLAT_THRESHOLD."""
+        start = max(0, i - CONSEC_CANDLES + 1)
+        window = st_vals[start: i + 1]
+        return (np.nanmax(window) - np.nanmin(window)) < ST_FLAT_THRESHOLD
+
+    def record(dir_, e_time, e_price, x_time, x_price, pk, fixed_sl, st_sl_val, reason):
         if dir_ == "long":
             pnl = round((x_price - e_price) / e_price * 100, 4)
         else:
             pnl = round((e_price - x_price) / e_price * 100, 4)
         pts = round(abs(x_price - e_price), 4)
+        # "Stop Loss" label ONLY when price closed against entry beyond fixed SL
+        result = "WIN" if pnl > 0 else "LOSS"
         trades.append({
-            "Date"           : e_time.strftime("%Y-%m-%d"),
-            "Direction"      : "Long  ↑" if dir_ == "long" else "Short ↓",
-            "Entry Time"     : fmt(e_time),
-            "Entry Price"    : round(e_price, 2),
-            "ST Stop Loss"   : round(sl_at_exit, 2),   # ST value at exit candle
-            "Exit Time"      : fmt(x_time),
-            "Exit Price"     : round(x_price, 2),
-            "Peak"           : round(pk, 2),
-            "Points Captured": pts,
-            "P&L %"          : pnl,
-            "Exit Reason"    : reason,
-            "Result"         : "WIN" if pnl > 0 else "LOSS",
+            "Date"            : e_time.strftime("%Y-%m-%d"),
+            "Direction"       : "Long  ↑" if dir_ == "long" else "Short ↓",
+            "Entry Time"      : fmt(e_time),
+            "Entry Price"     : round(e_price, 2),
+            "Fixed SL Price"  : round(fixed_sl, 2),
+            "ST SL Price"     : round(st_sl_val, 2),
+            "Exit Time"       : fmt(x_time),
+            "Exit Price"      : round(x_price, 2),
+            "Peak"            : round(pk, 2),
+            "Points Captured" : pts,
+            "P&L %"           : pnl,
+            "Exit Reason"     : reason,
+            "Result"          : result,
         })
 
-    for i in range(1, len(df)):
+    for i in range(1, n):
         c_close   = closes[i]
         c_high    = highs[i]
         c_low     = lows[i]
         c_time    = times[i]
         c_tod     = c_time.time()
-        c_st      = st_vals[i]        # current ST line value = dynamic stop loss
+        c_st      = st_vals[i]
         c_bull    = st_bulls[i]
-        prev_bull = st_bulls[i-1]
+        prev_bull = st_bulls[i - 1]
+        c_st_prev = st_vals[i - 1]
+        c_adx     = adx_vals[i]          # ADX value this candle
 
-        flipped_bull = (not prev_bull) and c_bull   # bear → bull
-        flipped_bear = prev_bull and (not c_bull)   # bull → bear
+        st_rising  = c_st > c_st_prev
+        st_falling = c_st < c_st_prev
+        adx_ok     = (not np.isnan(c_adx)) and c_adx > ADX_MIN_ENTRY
 
-        # ── EOD FORCE EXIT ─────────────────────────────────────────────
+        flipped_bull = (not prev_bull) and c_bull
+        flipped_bear = prev_bull and (not c_bull)
+
+        # ── EOD FORCE EXIT ──────────────────────────────────────────────
         if in_trade and c_tod >= MARKET_CLOSE:
             pk_final = max(peak, c_high) if direction == "long" else min(peak, c_low)
+            fixed_sl = (entry_price * (1 - STOPLOSS_PCT) if direction == "long"
+                        else entry_price * (1 + STOPLOSS_PCT))
             record(direction, entry_time, entry_price,
-                   c_time, c_close, pk_final, c_st, "EOD Exit")
-            in_trade = False
+                   c_time, c_close, pk_final, fixed_sl, c_st, "EOD Exit")
+            in_trade = False; consec_count = 0
+            prev_low_trade = None; prev_high_trade = None
             continue
 
-        # Skip outside market hours
         if c_tod < MARKET_OPEN or c_tod >= MARKET_CLOSE:
             continue
 
-        # ── MANAGE OPEN TRADE ──────────────────────────────────────────
+        # ── FIRST CANDLE OF DAY TRACKING ────────────────────────────────
+        c_date = c_time.date()
+        if c_date != current_day:
+            current_day       = c_date
+            first_candle_done = False
+        else:
+            first_candle_done = True
+
+        # ── MANAGE OPEN TRADE ───────────────────────────────────────────
         if in_trade:
+            fixed_sl = (entry_price * (1 - STOPLOSS_PCT) if direction == "long"
+                        else entry_price * (1 + STOPLOSS_PCT))
+
             if direction == "long":
                 if c_high > peak: peak = c_high
 
-                # Stop Loss = ST line value (dynamic)
-                # Exit when candle LOW touches or goes below the ST line
-                if c_low <= c_st or flipped_bear:
-                    # Exit price = ST line value (price at which ST is hit)
-                    exit_px = round(c_st, 2)
-                    reason  = "ST Stop Loss" if c_low <= c_st else "ST Flip Bear"
+                # --- Track consecutive lower lows ---
+                if prev_low_trade is not None and c_low < prev_low_trade:
+                    consec_count += 1
+                else:
+                    consec_count = 0   # reset — a higher low broke the streak
+                prev_low_trade = c_low
+
+                # ── EXIT PRIORITY ────────────────────────────────────────
+
+                # 1. Fixed SL: price closes below entry * (1 - 0.15%)
+                #    Exit price = fixed SL level; labelled "Stop Loss"
+                if c_close <= fixed_sl:
                     record("long", entry_time, entry_price,
-                           c_time, exit_px, peak, c_st, reason)
-                    in_trade = False
-                    # If ST is now bearish, immediately enter short
-                    if not c_bull:
+                           c_time, fixed_sl, peak, fixed_sl, c_st, "Stop Loss")
+                    in_trade = False; consec_count = 0; prev_low_trade = None
+                    if not c_bull and st_falling and adx_ok and first_candle_done:
                         entry_price = c_close; entry_time = c_time
                         peak = c_low; direction = "short"; in_trade = True
+                        consec_count = 0; prev_high_trade = c_high
+
+                # 2. Consecutive lower lows + flat ST: price converging toward flat ST
+                elif consec_count >= CONSEC_CANDLES and is_st_flat(i):
+                    record("long", entry_time, entry_price,
+                           c_time, c_close, peak, fixed_sl, c_st,
+                           f"6 ConsecLow Exit")
+                    in_trade = False; consec_count = 0; prev_low_trade = None
+                    if not c_bull and st_falling and adx_ok and first_candle_done:
+                        entry_price = c_close; entry_time = c_time
+                        peak = c_low; direction = "short"; in_trade = True
+                        consec_count = 0; prev_high_trade = c_high
+
+                # 3. ST line touch: candle Low touches or crosses the ST line
+                #    NOT labelled "Stop Loss" — just "ST Exit"
+                elif c_low <= c_st:
+                    record("long", entry_time, entry_price,
+                           c_time, c_st, peak, fixed_sl, c_st, "ST Exit")
+                    in_trade = False; consec_count = 0; prev_low_trade = None
+                    if not c_bull and st_falling and adx_ok and first_candle_done:
+                        entry_price = c_close; entry_time = c_time
+                        peak = c_low; direction = "short"; in_trade = True
+                        consec_count = 0; prev_high_trade = c_high
 
             elif direction == "short":
                 if c_low < peak: peak = c_low
 
-                # Stop Loss = ST line value (dynamic)
-                # Exit when candle HIGH touches or goes above the ST line
-                if c_high >= c_st or flipped_bull:
-                    exit_px = round(c_st, 2)
-                    reason  = "ST Stop Loss" if c_high >= c_st else "ST Flip Bull"
+                # --- Track consecutive higher highs ---
+                if prev_high_trade is not None and c_high > prev_high_trade:
+                    consec_count += 1
+                else:
+                    consec_count = 0   # reset — a lower high broke the streak
+                prev_high_trade = c_high
+
+                # ── EXIT PRIORITY ────────────────────────────────────────
+
+                # 1. Fixed SL: price closes above entry * (1 + 0.15%)
+                if c_close >= fixed_sl:
                     record("short", entry_time, entry_price,
-                           c_time, exit_px, peak, c_st, reason)
-                    in_trade = False
-                    # If ST is now bullish, immediately enter long
-                    if c_bull:
+                           c_time, fixed_sl, peak, fixed_sl, c_st, "Stop Loss")
+                    in_trade = False; consec_count = 0; prev_high_trade = None
+                    if c_bull and st_rising and adx_ok and first_candle_done:
                         entry_price = c_close; entry_time = c_time
                         peak = c_high; direction = "long"; in_trade = True
+                        consec_count = 0; prev_low_trade = c_low
+
+                # 2. Consecutive higher highs + flat ST
+                elif consec_count >= CONSEC_CANDLES and is_st_flat(i):
+                    record("short", entry_time, entry_price,
+                           c_time, c_close, peak, fixed_sl, c_st,
+                           f"6 ConsecHigh Exit")
+                    in_trade = False; consec_count = 0; prev_high_trade = None
+                    if c_bull and st_rising and adx_ok and first_candle_done:
+                        entry_price = c_close; entry_time = c_time
+                        peak = c_high; direction = "long"; in_trade = True
+                        consec_count = 0; prev_low_trade = c_low
+
+                # 3. ST line touch: NOT a "Stop Loss"
+                elif c_high >= c_st:
+                    record("short", entry_time, entry_price,
+                           c_time, c_st, peak, fixed_sl, c_st, "ST Exit")
+                    in_trade = False; consec_count = 0; prev_high_trade = None
+                    if c_bull and st_rising and adx_ok and first_candle_done:
+                        entry_price = c_close; entry_time = c_time
+                        peak = c_high; direction = "long"; in_trade = True
+                        consec_count = 0; prev_low_trade = c_low
+
             continue
 
-        # ── NOT IN TRADE — CHECK ENTRY ─────────────────────────────────
-        if c_bull:                          # ST below price → LONG
+        # ── NOT IN TRADE — CHECK ENTRY ──────────────────────────────────
+        if not first_candle_done:
+            continue
+
+        # ADX gate: only enter when ADX > ADX_MIN_ENTRY (default 25) — avoids sideways chop
+        if c_bull and st_rising and adx_ok:
             entry_price = c_close; entry_time = c_time
             peak = c_high; direction = "long"; in_trade = True
+            consec_count = 0; prev_low_trade = c_low
 
-        elif not c_bull:                    # ST above price → SHORT
+        elif not c_bull and st_falling and adx_ok:
             entry_price = c_close; entry_time = c_time
             peak = c_low; direction = "short"; in_trade = True
+            consec_count = 0; prev_high_trade = c_high
 
     return trades
 
@@ -336,8 +493,9 @@ def print_results(trades):
 
     print("\n" + sep)
     print(f"  Supertrend({ST_PERIOD},{ST_MULTIPLIER})  |  {TICKER}  |  {INTERVAL}  |  EOD Exit: {MARKET_CLOSE}")
-    print(f"  Long : ST below price  →  Stop Loss = ST line value  →  Exit when Low ≤ ST line")
-    print(f"  Short: ST above price  →  Stop Loss = ST line value  →  Exit when High ≥ ST line")
+    print(f"  Long : ST bullish + rising  |  Exit priority: Fixed SL(0.15%) → 6 ConsecLow(flat ST) → ST line touch → EOD")
+    print(f"  Short: ST bearish + falling |  Exit priority: Fixed SL(0.15%) → 6 ConsecHigh(flat ST) → ST line touch → EOD")
+    print(f"  Stop Loss = only when close crosses fixed 0.15% SL level.  ST/Consec exits are neutral.")
     print(sep)
 
     if not trades:
@@ -351,7 +509,7 @@ def print_results(trades):
     # ── TRADE LOG ──────────────────────────────────────────────────────
     print("\n  TRADE LOG")
     print(thin)
-    cols = ["Date", "Direction", "Entry Time", "Entry Price", "ST Stop Loss",
+    cols = ["Date", "Direction", "Entry Time", "Entry Price", "Fixed SL Price", "ST SL Price",
             "Exit Time", "Exit Price", "Points Captured", "P&L %", "Exit Reason", "Result"]
     print(df_t[cols].to_string(index=False))
 
@@ -368,9 +526,10 @@ def print_results(trades):
     total     = len(df_t)
     wins      = (df_t["P&L %"] > 0).sum()
     losses    = total - wins
-    sl_exits  = (df_t["Exit Reason"] == "ST Stop Loss").sum()
-    st_exits  = df_t["Exit Reason"].str.startswith("ST Flip").sum()
-    eod_exits = (df_t["Exit Reason"] == "EOD Exit").sum()
+    sl_exits       = (df_t["Exit Reason"] == "Stop Loss").sum()
+    st_exits       = (df_t["Exit Reason"] == "ST Exit").sum()
+    consec_exits   = df_t["Exit Reason"].str.contains("Consec").sum()
+    eod_exits      = (df_t["Exit Reason"] == "EOD Exit").sum()
     win_pts   = df_t.loc[df_t["P&L %"] > 0, "Points Captured"].sum()
     loss_pts  = df_t.loc[df_t["P&L %"] <= 0, "Points Captured"].sum()
     net_pts   = win_pts - loss_pts
@@ -388,8 +547,9 @@ def print_results(trades):
     print(f"  Total Trades          : {total}")
     print(f"  Winners               : {wins}  ({wins/total*100:.1f}%)")
     print(f"  Losers                : {losses}  ({losses/total*100:.1f}%)")
-    print(f"  ST Stop Loss Exits    : {sl_exits}")
-    print(f"  ST Flip Exits         : {st_exits}")
+    print(f"  Stop Loss Exits       : {sl_exits}  (closed beyond 0.15% fixed SL)")
+    print(f"  ST Line Touch Exits   : {st_exits}")
+    print(f"  Consec Low/High Exits : {consec_exits}  (6 consec lows/highs on flat ST)")
     print(f"  EOD Force Exits       : {eod_exits}")
     print(dash)
     print(f"  {'P&L STATS':─<50}")
@@ -443,14 +603,17 @@ def export_excel(df, trades, df_trades, df_day):
             ["Ticker",          TICKER],
             ["Interval",        INTERVAL],
             ["Supertrend",      f"Period={ST_PERIOD}, Multiplier={ST_MULTIPLIER}"],
-            ["Stop Loss",       "Dynamic — ST line value"],
+            ["Stop Loss",       f"Fixed {STOPLOSS_PCT*100}% from entry (close must breach it)"],
+            ["Consec Exit",      f"{CONSEC_CANDLES} consec lows/highs + flat ST (<{ST_FLAT_THRESHOLD} pts)"],
             ["EOD Exit",        str(MARKET_CLOSE)],
             ["", ""],
             ["TRADE STATS",     ""],
             ["Total Trades",    total],
             ["Winners",         f"{wins} ({wins/total*100:.1f}%)"],
             ["Losers",          f"{losses} ({losses/total*100:.1f}%)"],
-            ["ST Stop Loss Exits", int((df_trades["Exit Reason"] == "ST Stop Loss").sum())],
+            ["Stop Loss Exits",       int((df_trades["Exit Reason"] == "Stop Loss").sum())],
+            ["ST Line Touch Exits",   int((df_trades["Exit Reason"] == "ST Exit").sum())],
+            ["Consec Low/High Exits", int(df_trades["Exit Reason"].str.contains("Consec").sum())],
             ["ST Flip Exits",   int(df_trades["Exit Reason"].str.startswith("ST Flip").sum())],
             ["EOD Exits",       int((df_trades["Exit Reason"] == "EOD Exit").sum())],
             ["", ""],

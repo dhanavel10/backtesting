@@ -4,12 +4,18 @@ Supertrend Intraday Backtesting Strategy
 LONG ENTRY  : ST is BELOW close price  (ST bull → price > ST line)
 LONG EXIT   : Price touches / crosses the ST line from above
               (ST line acts as the dynamic stop loss)
+              OR Hard SL fires first (whichever comes first)
 
 SHORT ENTRY : ST is ABOVE close price  (ST bear → price < ST line)
 SHORT EXIT  : Price touches / crosses the ST line from below
               (ST line acts as the dynamic stop loss)
+              OR Hard SL fires first (whichever comes first)
 
-ADDITIONAL EXIT:
+ADDITIONAL EXITS:
+  - Hard Stop Loss : Fixed % loss limit from entry (default 0.2%)
+                     Fires when candle LOW (long) or HIGH (short) breaches the hard SL price.
+                     Takes priority over ST Stop Loss check.
+                     Set HARD_SL_ENABLED = False to revert to pure ST SL behaviour.
   - EOD force exit at 15:15 IST
 
 OUTPUTS:
@@ -44,6 +50,14 @@ END           = None          # e.g. "2026-02-23"
 # Supertrend settings
 ST_PERIOD     = 10
 ST_MULTIPLIER = 3.0
+
+# ── Hard Stop Loss ──────────────────────────────────────────────
+HARD_SL_ENABLED = True          # Set False to disable (reverts to pure ST SL behaviour)
+HARD_SL_PCT     = 0.3        # Max loss allowed from entry price (%)
+                                 # Exit fires when loss reaches this level,
+                                 # BEFORE the ST line is even touched.
+                                 # Works independently — does NOT replace ST SL,
+                                 # whichever triggers first wins.
 
 # Intraday session (NSE)
 MARKET_OPEN   = dtime(9, 15)
@@ -174,20 +188,27 @@ def run_backtest(df):
     """
     LONG  : ST bull (ST line below price) → enter at close
             Stop Loss = current ST_val (dynamic, updates every candle)
-            Exit when: price LOW touches/crosses below ST line  OR  EOD
+            Hard SL   = entry_price * (1 - HARD_SL_PCT/100)  [if HARD_SL_ENABLED]
+            Exit when: Hard SL hit  OR  price LOW ≤ ST line  OR  EOD
+            (Hard SL is checked first — whichever fires first wins)
 
     SHORT : ST bear (ST line above price) → enter at close
             Stop Loss = current ST_val (dynamic, updates every candle)
-            Exit when: price HIGH touches/crosses above ST line  OR  EOD
+            Hard SL   = entry_price * (1 + HARD_SL_PCT/100)  [if HARD_SL_ENABLED]
+            Exit when: Hard SL hit  OR  price HIGH ≥ ST line  OR  EOD
+            (Hard SL is checked first — whichever fires first wins)
+
+    Re-entry after ST flip: allowed as before.
+    Re-entry after Hard SL: blocked (hard SL means the move failed, not a clean flip).
     """
     trades = []
 
-    in_trade    = False
-    direction   = None
-    entry_price = None
-    entry_time  = None
-    entry_date  = None
-    peak        = None   # highest (long) / lowest (short)
+    in_trade      = False
+    direction     = None
+    entry_price   = None
+    entry_time    = None
+    peak          = None        # highest (long) / lowest (short)
+    hard_sl_price = None        # fixed price level set at entry; None if disabled
 
     closes   = df["Close"].to_numpy(dtype=float)
     highs    = df["High"].to_numpy(dtype=float)
@@ -196,25 +217,26 @@ def run_backtest(df):
     st_bulls = df["ST_bull"].to_numpy(dtype=bool)
     times    = df.index
 
-    def record(dir_, e_time, e_price, x_time, x_price, pk, sl_at_exit, reason):
+    def record(dir_, e_time, e_price, x_time, x_price, pk, sl_at_exit, reason, hard_sl):
         if dir_ == "long":
             pnl = round((x_price - e_price) / e_price * 100, 4)
         else:
             pnl = round((e_price - x_price) / e_price * 100, 4)
         pts = round(abs(x_price - e_price), 4)
         trades.append({
-            "Date"           : e_time.strftime("%Y-%m-%d"),
-            "Direction"      : "Long  ↑" if dir_ == "long" else "Short ↓",
-            "Entry Time"     : fmt(e_time),
-            "Entry Price"    : round(e_price, 2),
-            "ST Stop Loss"   : round(sl_at_exit, 2),   # ST value at exit candle
-            "Exit Time"      : fmt(x_time),
-            "Exit Price"     : round(x_price, 2),
-            "Peak"           : round(pk, 2),
-            "Points Captured": pts,
-            "P&L %"          : pnl,
-            "Exit Reason"    : reason,
-            "Result"         : "WIN" if pnl > 0 else "LOSS",
+            "Date"            : e_time.strftime("%Y-%m-%d"),
+            "Direction"       : "Long  ↑" if dir_ == "long" else "Short ↓",
+            "Entry Time"      : fmt(e_time),
+            "Entry Price"     : round(e_price, 2),
+            "Hard SL Price"   : round(hard_sl, 2) if hard_sl is not None else "OFF",
+            "ST Stop Loss"    : round(sl_at_exit, 2),   # ST value at exit candle
+            "Exit Time"       : fmt(x_time),
+            "Exit Price"      : round(x_price, 2),
+            "Peak"            : round(pk, 2),
+            "Points Captured" : pts,
+            "P&L %"           : pnl,
+            "Exit Reason"     : reason,
+            "Result"          : "WIN" if pnl > 0 else "LOSS",
         })
 
     for i in range(1, len(df)):
@@ -234,7 +256,7 @@ def run_backtest(df):
         if in_trade and c_tod >= MARKET_CLOSE:
             pk_final = max(peak, c_high) if direction == "long" else min(peak, c_low)
             record(direction, entry_time, entry_price,
-                   c_time, c_close, pk_final, c_st, "EOD Exit")
+                   c_time, c_close, pk_final, c_st, "EOD Exit", hard_sl_price)
             in_trade = False
             continue
 
@@ -247,45 +269,66 @@ def run_backtest(df):
             if direction == "long":
                 if c_high > peak: peak = c_high
 
-                # Stop Loss = ST line value (dynamic)
-                # Exit when candle LOW touches or goes below the ST line
-                if c_low <= c_st or flipped_bear:
-                    # Exit price = ST line value (price at which ST is hit)
-                    exit_px = round(c_st, 2)
-                    reason  = "ST Stop Loss" if c_low <= c_st else "ST Flip Bear"
+                # Hard SL checked FIRST — fires before ST SL if both hit same candle
+                hard_sl_hit = (HARD_SL_ENABLED and
+                               hard_sl_price is not None and
+                               c_low <= hard_sl_price)
+                st_sl_hit   = c_low <= c_st or flipped_bear
+
+                if hard_sl_hit or st_sl_hit:
+                    if hard_sl_hit:
+                        exit_px = round(hard_sl_price, 2)
+                        reason  = f"Hard SL ({HARD_SL_PCT}%)"
+                    else:
+                        exit_px = round(c_st, 2)
+                        reason  = "ST Stop Loss" if c_low <= c_st else "ST Flip Bear"
                     record("long", entry_time, entry_price,
-                           c_time, exit_px, peak, c_st, reason)
+                           c_time, exit_px, peak, c_st, reason, hard_sl_price)
                     in_trade = False
-                    # If ST is now bearish, immediately enter short
-                    if not c_bull:
-                        entry_price = c_close; entry_time = c_time
-                        peak = c_low; direction = "short"; in_trade = True
+
+                    # Re-entry into short only on a clean ST flip (not a hard SL exit)
+                    if not hard_sl_hit and not c_bull:
+                        entry_price   = c_close; entry_time = c_time
+                        peak          = c_low;   direction  = "short"; in_trade = True
+                        hard_sl_price = round(entry_price * (1 + HARD_SL_PCT / 100), 4) if HARD_SL_ENABLED else None
 
             elif direction == "short":
                 if c_low < peak: peak = c_low
 
-                # Stop Loss = ST line value (dynamic)
-                # Exit when candle HIGH touches or goes above the ST line
-                if c_high >= c_st or flipped_bull:
-                    exit_px = round(c_st, 2)
-                    reason  = "ST Stop Loss" if c_high >= c_st else "ST Flip Bull"
+                # Hard SL checked FIRST
+                hard_sl_hit = (HARD_SL_ENABLED and
+                               hard_sl_price is not None and
+                               c_high >= hard_sl_price)
+                st_sl_hit   = c_high >= c_st or flipped_bull
+
+                if hard_sl_hit or st_sl_hit:
+                    if hard_sl_hit:
+                        exit_px = round(hard_sl_price, 2)
+                        reason  = f"Hard SL ({HARD_SL_PCT}%)"
+                    else:
+                        exit_px = round(c_st, 2)
+                        reason  = "ST Stop Loss" if c_high >= c_st else "ST Flip Bull"
                     record("short", entry_time, entry_price,
-                           c_time, exit_px, peak, c_st, reason)
+                           c_time, exit_px, peak, c_st, reason, hard_sl_price)
                     in_trade = False
-                    # If ST is now bullish, immediately enter long
-                    if c_bull:
-                        entry_price = c_close; entry_time = c_time
-                        peak = c_high; direction = "long"; in_trade = True
+
+                    # Re-entry into long only on a clean ST flip (not a hard SL exit)
+                    if not hard_sl_hit and c_bull:
+                        entry_price   = c_close; entry_time = c_time
+                        peak          = c_high;  direction  = "long"; in_trade = True
+                        hard_sl_price = round(entry_price * (1 - HARD_SL_PCT / 100), 4) if HARD_SL_ENABLED else None
             continue
 
         # ── NOT IN TRADE — CHECK ENTRY ─────────────────────────────────
         if c_bull:                          # ST below price → LONG
-            entry_price = c_close; entry_time = c_time
-            peak = c_high; direction = "long"; in_trade = True
+            entry_price   = c_close; entry_time = c_time
+            peak          = c_high;  direction  = "long"; in_trade = True
+            hard_sl_price = round(entry_price * (1 - HARD_SL_PCT / 100), 4) if HARD_SL_ENABLED else None
 
         elif not c_bull:                    # ST above price → SHORT
-            entry_price = c_close; entry_time = c_time
-            peak = c_low; direction = "short"; in_trade = True
+            entry_price   = c_close; entry_time = c_time
+            peak          = c_low;   direction  = "short"; in_trade = True
+            hard_sl_price = round(entry_price * (1 + HARD_SL_PCT / 100), 4) if HARD_SL_ENABLED else None
 
     return trades
 
@@ -332,12 +375,12 @@ def build_daily_summary(trades):
 def print_results(trades):
     sep  = "═" * 118
     dash = "─" * 118
-    thin = "─" * 118
 
     print("\n" + sep)
     print(f"  Supertrend({ST_PERIOD},{ST_MULTIPLIER})  |  {TICKER}  |  {INTERVAL}  |  EOD Exit: {MARKET_CLOSE}")
     print(f"  Long : ST below price  →  Stop Loss = ST line value  →  Exit when Low ≤ ST line")
     print(f"  Short: ST above price  →  Stop Loss = ST line value  →  Exit when High ≥ ST line")
+    print(f"  🛑 Hard SL : {'ON  | Max loss = ' + str(HARD_SL_PCT) + '% from entry (fires before ST SL if hit first)' if HARD_SL_ENABLED else 'OFF (pure ST SL mode)'}")
     print(sep)
 
     if not trades:
@@ -350,9 +393,10 @@ def print_results(trades):
 
     # ── TRADE LOG ──────────────────────────────────────────────────────
     print("\n  TRADE LOG")
-    print(thin)
-    cols = ["Date", "Direction", "Entry Time", "Entry Price", "ST Stop Loss",
-            "Exit Time", "Exit Price", "Points Captured", "P&L %", "Exit Reason", "Result"]
+    print(dash)
+    cols = ["Date", "Direction", "Entry Time", "Entry Price", "Hard SL Price",
+            "ST Stop Loss", "Exit Time", "Exit Price", "Points Captured",
+            "P&L %", "Exit Reason", "Result"]
     print(df_t[cols].to_string(index=False))
 
     # ── PER-DAY P&L ────────────────────────────────────────────────────
@@ -365,15 +409,16 @@ def print_results(trades):
     print(df_day[day_cols].to_string(index=False))
 
     # ── OVERALL SUMMARY ────────────────────────────────────────────────
-    total     = len(df_t)
-    wins      = (df_t["P&L %"] > 0).sum()
-    losses    = total - wins
-    sl_exits  = (df_t["Exit Reason"] == "ST Stop Loss").sum()
-    st_exits  = df_t["Exit Reason"].str.startswith("ST Flip").sum()
-    eod_exits = (df_t["Exit Reason"] == "EOD Exit").sum()
-    win_pts   = df_t.loc[df_t["P&L %"] > 0, "Points Captured"].sum()
-    loss_pts  = df_t.loc[df_t["P&L %"] <= 0, "Points Captured"].sum()
-    net_pts   = win_pts - loss_pts
+    total      = len(df_t)
+    wins       = (df_t["P&L %"] > 0).sum()
+    losses     = total - wins
+    hard_exits = df_t["Exit Reason"].str.startswith("Hard SL").sum()
+    sl_exits   = (df_t["Exit Reason"] == "ST Stop Loss").sum()
+    st_exits   = df_t["Exit Reason"].str.startswith("ST Flip").sum()
+    eod_exits  = (df_t["Exit Reason"] == "EOD Exit").sum()
+    win_pts    = df_t.loc[df_t["P&L %"] > 0, "Points Captured"].sum()
+    loss_pts   = df_t.loc[df_t["P&L %"] <= 0, "Points Captured"].sum()
+    net_pts    = win_pts - loss_pts
 
     profit_days = (df_day["Total P&L %"] > 0).sum()
     loss_days   = (df_day["Total P&L %"] < 0).sum()
@@ -384,10 +429,14 @@ def print_results(trades):
     print("\n\n" + sep)
     print("  OVERALL SUMMARY")
     print(dash)
+    print(f"  {'HARD SL CONFIG':─<50}")
+    print(f"  Hard Stop Loss        : {'ENABLED  (' + str(HARD_SL_PCT) + '% from entry)' if HARD_SL_ENABLED else 'DISABLED  (pure ST SL mode)'}")
+    print(dash)
     print(f"  {'TRADE STATS':─<50}")
     print(f"  Total Trades          : {total}")
     print(f"  Winners               : {wins}  ({wins/total*100:.1f}%)")
     print(f"  Losers                : {losses}  ({losses/total*100:.1f}%)")
+    print(f"  Hard SL Exits         : {hard_exits}  (max {HARD_SL_PCT}% loss cap triggered)")
     print(f"  ST Stop Loss Exits    : {sl_exits}")
     print(f"  ST Flip Exits         : {st_exits}")
     print(f"  EOD Force Exits       : {eod_exits}")
@@ -439,43 +488,47 @@ def export_excel(df, trades, df_trades, df_day):
         loss_days   = int((df_day["Total P&L %"] < 0).sum()) if df_day is not None else 0
 
         summary_rows = [
-            ["STRATEGY INFO",   ""],
-            ["Ticker",          TICKER],
-            ["Interval",        INTERVAL],
-            ["Supertrend",      f"Period={ST_PERIOD}, Multiplier={ST_MULTIPLIER}"],
-            ["Stop Loss",       "Dynamic — ST line value"],
-            ["EOD Exit",        str(MARKET_CLOSE)],
+            ["STRATEGY INFO",    ""],
+            ["Ticker",           TICKER],
+            ["Interval",         INTERVAL],
+            ["Supertrend",       f"Period={ST_PERIOD}, Multiplier={ST_MULTIPLIER}"],
+            ["Stop Loss",        "Dynamic — ST line value"],
+            ["EOD Exit",         str(MARKET_CLOSE)],
             ["", ""],
-            ["TRADE STATS",     ""],
-            ["Total Trades",    total],
-            ["Winners",         f"{wins} ({wins/total*100:.1f}%)"],
-            ["Losers",          f"{losses} ({losses/total*100:.1f}%)"],
+            ["HARD SL CONFIG",   ""],
+            ["Hard Stop Loss",   f"{'ENABLED' if HARD_SL_ENABLED else 'DISABLED'} — {HARD_SL_PCT}% max loss from entry"],
+            ["", ""],
+            ["TRADE STATS",      ""],
+            ["Total Trades",     total],
+            ["Winners",          f"{wins} ({wins/total*100:.1f}%)"],
+            ["Losers",           f"{losses} ({losses/total*100:.1f}%)"],
+            ["Hard SL Exits",    int(df_trades["Exit Reason"].str.startswith("Hard SL").sum())],
             ["ST Stop Loss Exits", int((df_trades["Exit Reason"] == "ST Stop Loss").sum())],
-            ["ST Flip Exits",   int(df_trades["Exit Reason"].str.startswith("ST Flip").sum())],
-            ["EOD Exits",       int((df_trades["Exit Reason"] == "EOD Exit").sum())],
+            ["ST Flip Exits",    int(df_trades["Exit Reason"].str.startswith("ST Flip").sum())],
+            ["EOD Exits",        int((df_trades["Exit Reason"] == "EOD Exit").sum())],
             ["", ""],
-            ["P&L STATS",       ""],
-            ["Total P&L %",     round(df_trades["P&L %"].sum(), 4)],
-            ["Avg P&L % / Trade", round(df_trades["P&L %"].mean(), 4)],
-            ["Best Trade %",    round(df_trades["P&L %"].max(), 4)],
-            ["Worst Trade %",   round(df_trades["P&L %"].min(), 4)],
+            ["P&L STATS",        ""],
+            ["Total P&L %",      round(df_trades["P&L %"].sum(), 4)],
+            ["Avg P&L % / Trade",round(df_trades["P&L %"].mean(), 4)],
+            ["Best Trade %",     round(df_trades["P&L %"].max(), 4)],
+            ["Worst Trade %",    round(df_trades["P&L %"].min(), 4)],
             ["", ""],
-            ["POINTS",          ""],
+            ["POINTS",           ""],
             ["Points Captured (wins)", round(win_pts, 2)],
-            ["Points Lost",     round(loss_pts, 2)],
-            ["Net Points",      round(win_pts - loss_pts, 2)],
+            ["Points Lost",      round(loss_pts, 2)],
+            ["Net Points",       round(win_pts - loss_pts, 2)],
             ["", ""],
-            ["DAY STATS",       ""],
+            ["DAY STATS",        ""],
             ["Total Trading Days", len(df_day) if df_day is not None else 0],
-            ["Profit Days",     profit_days],
-            ["Loss Days",       loss_days],
+            ["Profit Days",      profit_days],
+            ["Loss Days",        loss_days],
         ]
         if df_day is not None and not df_day.empty:
             best  = df_day.loc[df_day["Total P&L %"].idxmax()]
             worst = df_day.loc[df_day["Total P&L %"].idxmin()]
             summary_rows += [
-                ["Best Day",    f"{best['Date']}  →  {best['Total P&L %']:.4f}%"],
-                ["Worst Day",   f"{worst['Date']}  →  {worst['Total P&L %']:.4f}%"],
+                ["Best Day",     f"{best['Date']}  →  {best['Total P&L %']:.4f}%"],
+                ["Worst Day",    f"{worst['Date']}  →  {worst['Total P&L %']:.4f}%"],
             ]
         df_summary = pd.DataFrame(summary_rows, columns=["Metric", "Value"])
     else:
@@ -500,6 +553,7 @@ def _style_excel(fname, df_st, df_trades, df_day):
     BLUE_HDR    = "1F3864";  YELLOW_SEC  = "FFD700"
     GRAY_ALT    = "F2F2F2";  WHITE       = "FFFFFF"
     ORANGE      = "FCE4D6";  TEAL_LIGHT  = "DDEBF7"
+    PURPLE_LIGHT= "E2EFDA"
 
     thin_s = Side(style="thin", color="CCCCCC")
     bdr    = Border(left=thin_s, right=thin_s, top=thin_s, bottom=thin_s)
@@ -516,12 +570,6 @@ def _style_excel(fname, df_st, df_trades, df_day):
         for col in ws.columns:
             w = max((len(str(c.value or "")) for c in col), default=8)
             ws.column_dimensions[get_column_letter(col[0].column)].width = min(w + 3, cap)
-
-    def center_all(ws, start=2):
-        for row in ws.iter_rows(min_row=start):
-            for cell in row:
-                cell.alignment = Alignment(horizontal="center", vertical="center")
-                cell.border    = bdr
 
     wb = load_workbook(fname)
 
@@ -561,7 +609,11 @@ def _style_excel(fname, df_st, df_trades, df_day):
                 bg = RED_LIGHT;    result_cell.font = Font(bold=True, color=RED_DARK)
             else:
                 bg = GRAY_ALT if i % 2 == 0 else WHITE
-            if "Stop Loss" in reason:
+            # Hard SL → solid red (most severe), ST SL → orange, EOD → teal
+            if reason.startswith("Hard SL"):
+                reason_cell.fill = PatternFill("solid", fgColor="FF0000")
+                reason_cell.font = Font(bold=True, color="FFFFFF")
+            elif "Stop Loss" in reason:
                 reason_cell.fill = PatternFill("solid", fgColor=ORANGE)
                 reason_cell.font = Font(bold=True, color="C55A11")
             elif "EOD" in reason:
@@ -579,11 +631,7 @@ def _style_excel(fname, df_st, df_trades, df_day):
         ws = wb["Daily P&L"]
         hdr(ws)
         ws.freeze_panes = "A2"
-        result_col = ws.max_column   # "Day Result" is last column
-        pnl_col    = None
-        for cell in ws[1]:
-            if "Total P&L" in str(cell.value or ""):
-                pnl_col = cell.column
+        result_col = ws.max_column
         for i, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row), 1):
             day_result_cell = row[result_col - 1]
             day_result      = str(day_result_cell.value or "")
@@ -602,13 +650,20 @@ def _style_excel(fname, df_st, df_trades, df_day):
     # ── Sheet 4: Summary ─────────────────────────────────────────────────
     ws = wb["Summary"]
     hdr(ws)
-    SECTION_LABELS = {"STRATEGY INFO", "TRADE STATS", "P&L STATS", "POINTS", "DAY STATS"}
+    SECTION_LABELS = {"STRATEGY INFO", "HARD SL CONFIG", "TRADE STATS", "P&L STATS", "POINTS", "DAY STATS"}
+    HIGHLIGHT_ROWS = {"Hard Stop Loss"}
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
         label = str(row[0].value or "")
         if label in SECTION_LABELS:
             for cell in row:
-                cell.fill = PatternFill("solid", fgColor=YELLOW_SEC)
-                cell.font = Font(bold=True, color="000000", size=10)
+                cell.fill   = PatternFill("solid", fgColor=YELLOW_SEC)
+                cell.font   = Font(bold=True, color="000000", size=10)
+                cell.border = bdr
+            continue
+        if label in HIGHLIGHT_ROWS:
+            for cell in row:
+                cell.fill   = PatternFill("solid", fgColor=PURPLE_LIGHT)
+                cell.font   = Font(bold=True, color="375623")
                 cell.border = bdr
             continue
         val_cell = row[1] if len(row) > 1 else None
@@ -624,7 +679,6 @@ def _style_excel(fname, df_st, df_trades, df_day):
                     color=GREEN_DARK if isinstance(v, (int, float)) and v > 0 else RED_DARK)
     ws.column_dimensions["A"].width = 30
     ws.column_dimensions["B"].width = 28
-
     wb.save(fname)
 
 
@@ -686,6 +740,8 @@ def build_chart(df, trades):
         loy = xp[mask & (rs == "LOSS")].tolist()
         slx = xt[mask & (ex == "ST Stop Loss")].tolist()
         sly = xp[mask & (ex == "ST Stop Loss")].tolist()
+        hsx = xt[mask & ex.str.startswith("Hard SL")].tolist()
+        hsy = xp[mask & ex.str.startswith("Hard SL")].tolist()
 
         if lx:
             fig.add_trace(go.Scatter(x=lx, y=ly, mode="markers", name="Long Entry",
@@ -707,7 +763,13 @@ def build_chart(df, trades):
             fig.add_trace(go.Scatter(x=slx, y=sly, mode="markers", name="ST Stop Loss Hit",
                 marker=dict(symbol="diamond", size=11, color="#fb923c",
                             line=dict(color="#c2410c", width=1.5))))
+        if hsx:
+            fig.add_trace(go.Scatter(x=hsx, y=hsy, mode="markers",
+                name=f"Hard SL Hit ({HARD_SL_PCT}%)",
+                marker=dict(symbol="hexagram", size=14, color="#ff0000",
+                            line=dict(color="white", width=1.5))))
 
+    hard_sl_label = f"HardSL {HARD_SL_PCT}% + " if HARD_SL_ENABLED else ""
     fig.update_layout(
         template="plotly_dark",
         height=750,
@@ -720,7 +782,7 @@ def build_chart(df, trades):
             text=(f"<b>{TICKER}</b> | {INTERVAL} | Supertrend({ST_PERIOD},{ST_MULTIPLIER})<br>"
                   f"<span style='font-size:11px;color:#94a3b8'>"
                   f"Long: ST below price  |  Short: ST above price  |  "
-                  f"Stop Loss = ST line value  |  Exit: price crosses ST</span>"),
+                  f"{hard_sl_label}Stop Loss = ST line  |  Exit: price crosses ST</span>"),
             x=0.5, xanchor="center"
         )
     )

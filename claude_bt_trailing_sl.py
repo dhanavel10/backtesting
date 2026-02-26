@@ -4,12 +4,25 @@ Supertrend Intraday Backtesting Strategy
 LONG ENTRY  : ST is BELOW close price  (ST bull → price > ST line)
 LONG EXIT   : Price touches / crosses the ST line from above
               (ST line acts as the dynamic stop loss)
+              OR Hard SL fires first (whichever comes first)
 
 SHORT ENTRY : ST is ABOVE close price  (ST bear → price < ST line)
 SHORT EXIT  : Price touches / crosses the ST line from below
               (ST line acts as the dynamic stop loss)
+              OR Hard SL fires first (whichever comes first)
 
-ADDITIONAL EXIT:
+ADDITIONAL EXITS:
+  - Hard Stop Loss    : Fixed % loss limit from entry (default 0.2%)
+                        Fires when candle LOW (long) or HIGH (short) breaches the hard SL price.
+                        Takes priority over ST Stop Loss check.
+                        Set HARD_SL_ENABLED = False to revert to pure ST SL behaviour.
+  - Rolling Trail SL  : Once profit hits TRAIL_ACTIVATE_PTS points, a trailing stop is set
+                        TRAIL_OFFSET_PTS below the trade's highest point (long) or above the
+                        lowest point (short). As price makes new extremes in steps of
+                        TRAIL_STEP_PTS, the trail stop advances by the same step — locking in
+                        more profit. The trail can only move in the profitable direction, never back.
+                        Set TRAIL_SL_ENABLED = False to disable entirely.
+                        Priority order: Hard SL → Trail SL → ST SL (first trigger wins).
   - EOD force exit at 15:15 IST
 
 OUTPUTS:
@@ -44,6 +57,27 @@ END           = None          # e.g. "2026-02-23"
 # Supertrend settings
 ST_PERIOD     = 10
 ST_MULTIPLIER = 3.0
+
+# ── Hard Stop Loss ──────────────────────────────────────────────
+HARD_SL_ENABLED = True          # Set False to disable (reverts to pure ST SL behaviour)
+HARD_SL_PCT     = 0.2           # Max loss allowed from entry price (%)
+                                 # Exit fires when loss reaches this level,
+                                 # BEFORE the ST line is even touched.
+                                 # Works independently — does NOT replace ST SL,
+                                 # whichever triggers first wins.
+
+# ── Rolling Trailing Stop Loss ──────────────────────────────────
+TRAIL_SL_ENABLED    = True      # Set False to disable completely
+TRAIL_ACTIVATE_PTS  = 60        # Profit in points at which trail SL activates
+                                 # e.g. 60 → trail kicks in once trade is +60 pts in profit
+TRAIL_OFFSET_PTS    = 50        # Trail SL is placed this many points BELOW the peak (long)
+                                 # or ABOVE the trough (short)
+                                 # e.g. peak=60 above entry → trail SL at peak − 50
+TRAIL_STEP_PTS      = 10        # Every time peak advances by this many points beyond the
+                                 # last step, trail SL moves up by the same amount
+                                 # e.g. peak hits 70 → trail moves to 70−50=20 above entry
+                                 #      peak hits 80 → trail moves to 80−50=30 above entry
+                                 # Trail SL can ONLY move in profitable direction, never back.
 
 # Intraday session (NSE)
 MARKET_OPEN   = dtime(9, 15)
@@ -173,21 +207,38 @@ def fetch_data():
 def run_backtest(df):
     """
     LONG  : ST bull (ST line below price) → enter at close
-            Stop Loss = current ST_val (dynamic, updates every candle)
-            Exit when: price LOW touches/crosses below ST line  OR  EOD
+            Stop Loss priority (first hit wins):
+              1. Hard SL      = entry_price * (1 - HARD_SL_PCT/100)  [if enabled]
+              2. Trail SL     = peak − TRAIL_OFFSET_PTS  [activates when profit ≥ TRAIL_ACTIVATE_PTS]
+                                advances by TRAIL_STEP_PTS every time peak does
+              3. ST SL        = current ST_val (dynamic)
+            Exit also: EOD at 15:15
 
     SHORT : ST bear (ST line above price) → enter at close
-            Stop Loss = current ST_val (dynamic, updates every candle)
-            Exit when: price HIGH touches/crosses above ST line  OR  EOD
+            Stop Loss priority (first hit wins):
+              1. Hard SL      = entry_price * (1 + HARD_SL_PCT/100)  [if enabled]
+              2. Trail SL     = trough + TRAIL_OFFSET_PTS  [activates when profit ≥ TRAIL_ACTIVATE_PTS]
+                                advances by TRAIL_STEP_PTS every time trough does
+              3. ST SL        = current ST_val (dynamic)
+            Exit also: EOD at 15:15
+
+    Re-entry after ST flip : allowed as before.
+    Re-entry after Hard SL : blocked.
+    Re-entry after Trail SL: blocked (trail SL is a profit-lock, not a flip signal).
     """
     trades = []
 
-    in_trade    = False
-    direction   = None
-    entry_price = None
-    entry_time  = None
-    entry_date  = None
-    peak        = None   # highest (long) / lowest (short)
+    in_trade      = False
+    direction     = None
+    entry_price   = None
+    entry_time    = None
+    peak          = None        # highest high seen (long) / lowest low seen (short)
+    hard_sl_price = None        # fixed price level set at entry; None if disabled
+
+    # Trail SL state — reset on every new entry
+    trail_sl_price   = None     # current trail SL price (None = not yet activated)
+    trail_peak_step  = None     # the peak level at which trail was last moved
+                                 # (used to know when to advance by TRAIL_STEP_PTS)
 
     closes   = df["Close"].to_numpy(dtype=float)
     highs    = df["High"].to_numpy(dtype=float)
@@ -196,25 +247,27 @@ def run_backtest(df):
     st_bulls = df["ST_bull"].to_numpy(dtype=bool)
     times    = df.index
 
-    def record(dir_, e_time, e_price, x_time, x_price, pk, sl_at_exit, reason):
+    def record(dir_, e_time, e_price, x_time, x_price, pk, sl_at_exit, reason, hard_sl, trail_sl):
         if dir_ == "long":
             pnl = round((x_price - e_price) / e_price * 100, 4)
         else:
             pnl = round((e_price - x_price) / e_price * 100, 4)
         pts = round(abs(x_price - e_price), 4)
         trades.append({
-            "Date"           : e_time.strftime("%Y-%m-%d"),
-            "Direction"      : "Long  ↑" if dir_ == "long" else "Short ↓",
-            "Entry Time"     : fmt(e_time),
-            "Entry Price"    : round(e_price, 2),
-            "ST Stop Loss"   : round(sl_at_exit, 2),   # ST value at exit candle
-            "Exit Time"      : fmt(x_time),
-            "Exit Price"     : round(x_price, 2),
-            "Peak"           : round(pk, 2),
-            "Points Captured": pts,
-            "P&L %"          : pnl,
-            "Exit Reason"    : reason,
-            "Result"         : "WIN" if pnl > 0 else "LOSS",
+            "Date"            : e_time.strftime("%Y-%m-%d"),
+            "Direction"       : "Long  ↑" if dir_ == "long" else "Short ↓",
+            "Entry Time"      : fmt(e_time),
+            "Entry Price"     : round(e_price, 2),
+            "Hard SL Price"   : round(hard_sl, 2) if hard_sl is not None else "OFF",
+            "Trail SL Price"  : round(trail_sl, 2) if trail_sl is not None else "—",
+            "ST Stop Loss"    : round(sl_at_exit, 2),
+            "Exit Time"       : fmt(x_time),
+            "Exit Price"      : round(x_price, 2),
+            "Peak"            : round(pk, 2),
+            "Points Captured" : pts,
+            "P&L %"           : pnl,
+            "Exit Reason"     : reason,
+            "Result"          : "WIN" if pnl > 0 else "LOSS",
         })
 
     for i in range(1, len(df)):
@@ -234,7 +287,8 @@ def run_backtest(df):
         if in_trade and c_tod >= MARKET_CLOSE:
             pk_final = max(peak, c_high) if direction == "long" else min(peak, c_low)
             record(direction, entry_time, entry_price,
-                   c_time, c_close, pk_final, c_st, "EOD Exit")
+                   c_time, c_close, pk_final, c_st, "EOD Exit",
+                   hard_sl_price, trail_sl_price)
             in_trade = False
             continue
 
@@ -245,47 +299,125 @@ def run_backtest(df):
         # ── MANAGE OPEN TRADE ──────────────────────────────────────────
         if in_trade:
             if direction == "long":
-                if c_high > peak: peak = c_high
+                # Update peak high
+                if c_high > peak:
+                    peak = c_high
 
-                # Stop Loss = ST line value (dynamic)
-                # Exit when candle LOW touches or goes below the ST line
-                if c_low <= c_st or flipped_bear:
-                    # Exit price = ST line value (price at which ST is hit)
-                    exit_px = round(c_st, 2)
-                    reason  = "ST Stop Loss" if c_low <= c_st else "ST Flip Bear"
+                # ── Update Trail SL ─────────────────────────────────
+                if TRAIL_SL_ENABLED:
+                    profit_pts = peak - entry_price
+                    if profit_pts >= TRAIL_ACTIVATE_PTS:
+                        if trail_sl_price is None:
+                            # First activation: anchor the step at the activation level
+                            # Snap peak down to nearest TRAIL_STEP_PTS multiple
+                            # above TRAIL_ACTIVATE_PTS so steps are clean integers
+                            steps_done   = int((profit_pts - TRAIL_ACTIVATE_PTS) / TRAIL_STEP_PTS)
+                            trail_peak_step = entry_price + TRAIL_ACTIVATE_PTS + steps_done * TRAIL_STEP_PTS
+                            trail_sl_price  = trail_peak_step - TRAIL_OFFSET_PTS
+                        else:
+                            # Advance trail by TRAIL_STEP_PTS for every step peak exceeds last step
+                            while peak >= trail_peak_step + TRAIL_STEP_PTS:
+                                trail_peak_step += TRAIL_STEP_PTS
+                                trail_sl_price  += TRAIL_STEP_PTS
+
+                # ── Check exits (priority: Hard SL → Trail SL → ST SL) ──
+                hard_sl_hit  = (HARD_SL_ENABLED and
+                                hard_sl_price is not None and
+                                c_low <= hard_sl_price)
+                trail_sl_hit = (TRAIL_SL_ENABLED and
+                                trail_sl_price is not None and
+                                c_low <= trail_sl_price)
+                st_sl_hit    = c_low <= c_st or flipped_bear
+
+                if hard_sl_hit or trail_sl_hit or st_sl_hit:
+                    if hard_sl_hit:
+                        exit_px = round(hard_sl_price, 2)
+                        reason  = f"Hard SL ({HARD_SL_PCT}%)"
+                    elif trail_sl_hit:
+                        exit_px = round(trail_sl_price, 2)
+                        reason  = "Trail SL"
+                    else:
+                        exit_px = round(c_st, 2)
+                        reason  = "ST Stop Loss" if c_low <= c_st else "ST Flip Bear"
                     record("long", entry_time, entry_price,
-                           c_time, exit_px, peak, c_st, reason)
+                           c_time, exit_px, peak, c_st, reason,
+                           hard_sl_price, trail_sl_price)
                     in_trade = False
-                    # If ST is now bearish, immediately enter short
-                    if not c_bull:
-                        entry_price = c_close; entry_time = c_time
-                        peak = c_low; direction = "short"; in_trade = True
+
+                    # Re-entry into short only on clean ST flip (not Hard/Trail SL)
+                    if not hard_sl_hit and not trail_sl_hit and not c_bull:
+                        entry_price      = c_close; entry_time = c_time
+                        peak             = c_low;   direction  = "short"; in_trade = True
+                        hard_sl_price    = round(entry_price * (1 + HARD_SL_PCT / 100), 4) if HARD_SL_ENABLED else None
+                        trail_sl_price   = None
+                        trail_peak_step  = None
 
             elif direction == "short":
-                if c_low < peak: peak = c_low
+                # Update peak low (trough)
+                if c_low < peak:
+                    peak = c_low
 
-                # Stop Loss = ST line value (dynamic)
-                # Exit when candle HIGH touches or goes above the ST line
-                if c_high >= c_st or flipped_bull:
-                    exit_px = round(c_st, 2)
-                    reason  = "ST Stop Loss" if c_high >= c_st else "ST Flip Bull"
+                # ── Update Trail SL ─────────────────────────────────
+                if TRAIL_SL_ENABLED:
+                    profit_pts = entry_price - peak   # positive when short is profitable
+                    if profit_pts >= TRAIL_ACTIVATE_PTS:
+                        if trail_sl_price is None:
+                            steps_done      = int((profit_pts - TRAIL_ACTIVATE_PTS) / TRAIL_STEP_PTS)
+                            trail_peak_step = entry_price - TRAIL_ACTIVATE_PTS - steps_done * TRAIL_STEP_PTS
+                            trail_sl_price  = trail_peak_step + TRAIL_OFFSET_PTS
+                        else:
+                            # Advance trail downward as trough makes new lows
+                            while peak <= trail_peak_step - TRAIL_STEP_PTS:
+                                trail_peak_step -= TRAIL_STEP_PTS
+                                trail_sl_price  -= TRAIL_STEP_PTS
+
+                # ── Check exits (priority: Hard SL → Trail SL → ST SL) ──
+                hard_sl_hit  = (HARD_SL_ENABLED and
+                                hard_sl_price is not None and
+                                c_high >= hard_sl_price)
+                trail_sl_hit = (TRAIL_SL_ENABLED and
+                                trail_sl_price is not None and
+                                c_high >= trail_sl_price)
+                st_sl_hit    = c_high >= c_st or flipped_bull
+
+                if hard_sl_hit or trail_sl_hit or st_sl_hit:
+                    if hard_sl_hit:
+                        exit_px = round(hard_sl_price, 2)
+                        reason  = f"Hard SL ({HARD_SL_PCT}%)"
+                    elif trail_sl_hit:
+                        exit_px = round(trail_sl_price, 2)
+                        reason  = "Trail SL"
+                    else:
+                        exit_px = round(c_st, 2)
+                        reason  = "ST Stop Loss" if c_high >= c_st else "ST Flip Bull"
                     record("short", entry_time, entry_price,
-                           c_time, exit_px, peak, c_st, reason)
+                           c_time, exit_px, peak, c_st, reason,
+                           hard_sl_price, trail_sl_price)
                     in_trade = False
-                    # If ST is now bullish, immediately enter long
-                    if c_bull:
-                        entry_price = c_close; entry_time = c_time
-                        peak = c_high; direction = "long"; in_trade = True
+
+                    # Re-entry into long only on clean ST flip (not Hard/Trail SL)
+                    if not hard_sl_hit and not trail_sl_hit and c_bull:
+                        entry_price      = c_close; entry_time = c_time
+                        peak             = c_high;  direction  = "long"; in_trade = True
+                        hard_sl_price    = round(entry_price * (1 - HARD_SL_PCT / 100), 4) if HARD_SL_ENABLED else None
+                        trail_sl_price   = None
+                        trail_peak_step  = None
             continue
 
         # ── NOT IN TRADE — CHECK ENTRY ─────────────────────────────────
         if c_bull:                          # ST below price → LONG
-            entry_price = c_close; entry_time = c_time
-            peak = c_high; direction = "long"; in_trade = True
+            entry_price      = c_close; entry_time = c_time
+            peak             = c_high;  direction  = "long"; in_trade = True
+            hard_sl_price    = round(entry_price * (1 - HARD_SL_PCT / 100), 4) if HARD_SL_ENABLED else None
+            trail_sl_price   = None
+            trail_peak_step  = None
 
         elif not c_bull:                    # ST above price → SHORT
-            entry_price = c_close; entry_time = c_time
-            peak = c_low; direction = "short"; in_trade = True
+            entry_price      = c_close; entry_time = c_time
+            peak             = c_low;   direction  = "short"; in_trade = True
+            hard_sl_price    = round(entry_price * (1 + HARD_SL_PCT / 100), 4) if HARD_SL_ENABLED else None
+            trail_sl_price   = None
+            trail_peak_step  = None
 
     return trades
 
@@ -332,12 +464,13 @@ def build_daily_summary(trades):
 def print_results(trades):
     sep  = "═" * 118
     dash = "─" * 118
-    thin = "─" * 118
 
     print("\n" + sep)
     print(f"  Supertrend({ST_PERIOD},{ST_MULTIPLIER})  |  {TICKER}  |  {INTERVAL}  |  EOD Exit: {MARKET_CLOSE}")
     print(f"  Long : ST below price  →  Stop Loss = ST line value  →  Exit when Low ≤ ST line")
     print(f"  Short: ST above price  →  Stop Loss = ST line value  →  Exit when High ≥ ST line")
+    print(f"  🛑 Hard SL  : {'ON  | Max loss = ' + str(HARD_SL_PCT) + '% from entry' if HARD_SL_ENABLED else 'OFF'}")
+    print(f"  📈 Trail SL : {'ON  | Activates at +' + str(TRAIL_ACTIVATE_PTS) + ' pts | Offset ' + str(TRAIL_OFFSET_PTS) + ' pts | Step ' + str(TRAIL_STEP_PTS) + ' pts' if TRAIL_SL_ENABLED else 'OFF'}")
     print(sep)
 
     if not trades:
@@ -350,9 +483,10 @@ def print_results(trades):
 
     # ── TRADE LOG ──────────────────────────────────────────────────────
     print("\n  TRADE LOG")
-    print(thin)
-    cols = ["Date", "Direction", "Entry Time", "Entry Price", "ST Stop Loss",
-            "Exit Time", "Exit Price", "Points Captured", "P&L %", "Exit Reason", "Result"]
+    print(dash)
+    cols = ["Date", "Direction", "Entry Time", "Entry Price", "Hard SL Price",
+            "Trail SL Price", "ST Stop Loss", "Exit Time", "Exit Price",
+            "Points Captured", "P&L %", "Exit Reason", "Result"]
     print(df_t[cols].to_string(index=False))
 
     # ── PER-DAY P&L ────────────────────────────────────────────────────
@@ -365,15 +499,17 @@ def print_results(trades):
     print(df_day[day_cols].to_string(index=False))
 
     # ── OVERALL SUMMARY ────────────────────────────────────────────────
-    total     = len(df_t)
-    wins      = (df_t["P&L %"] > 0).sum()
-    losses    = total - wins
-    sl_exits  = (df_t["Exit Reason"] == "ST Stop Loss").sum()
-    st_exits  = df_t["Exit Reason"].str.startswith("ST Flip").sum()
-    eod_exits = (df_t["Exit Reason"] == "EOD Exit").sum()
-    win_pts   = df_t.loc[df_t["P&L %"] > 0, "Points Captured"].sum()
-    loss_pts  = df_t.loc[df_t["P&L %"] <= 0, "Points Captured"].sum()
-    net_pts   = win_pts - loss_pts
+    total       = len(df_t)
+    wins        = (df_t["P&L %"] > 0).sum()
+    losses      = total - wins
+    hard_exits  = df_t["Exit Reason"].str.startswith("Hard SL").sum()
+    trail_exits = (df_t["Exit Reason"] == "Trail SL").sum()
+    sl_exits    = (df_t["Exit Reason"] == "ST Stop Loss").sum()
+    st_exits    = df_t["Exit Reason"].str.startswith("ST Flip").sum()
+    eod_exits   = (df_t["Exit Reason"] == "EOD Exit").sum()
+    win_pts    = df_t.loc[df_t["P&L %"] > 0, "Points Captured"].sum()
+    loss_pts   = df_t.loc[df_t["P&L %"] <= 0, "Points Captured"].sum()
+    net_pts    = win_pts - loss_pts
 
     profit_days = (df_day["Total P&L %"] > 0).sum()
     loss_days   = (df_day["Total P&L %"] < 0).sum()
@@ -384,10 +520,20 @@ def print_results(trades):
     print("\n\n" + sep)
     print("  OVERALL SUMMARY")
     print(dash)
+    print(f"  {'HARD SL & TRAIL SL CONFIG':─<50}")
+    print(f"  Hard Stop Loss        : {'ENABLED  (' + str(HARD_SL_PCT) + '% from entry)' if HARD_SL_ENABLED else 'DISABLED'}")
+    print(f"  Rolling Trail SL      : {'ENABLED' if TRAIL_SL_ENABLED else 'DISABLED'}", end="")
+    if TRAIL_SL_ENABLED:
+        print(f"  |  Activates at +{TRAIL_ACTIVATE_PTS} pts  |  Offset {TRAIL_OFFSET_PTS} pts  |  Step {TRAIL_STEP_PTS} pts")
+    else:
+        print()
+    print(dash)
     print(f"  {'TRADE STATS':─<50}")
     print(f"  Total Trades          : {total}")
     print(f"  Winners               : {wins}  ({wins/total*100:.1f}%)")
     print(f"  Losers                : {losses}  ({losses/total*100:.1f}%)")
+    print(f"  Hard SL Exits         : {hard_exits}  (max {HARD_SL_PCT}% loss cap)")
+    print(f"  Trail SL Exits        : {trail_exits}  (rolling profit-lock triggered)")
     print(f"  ST Stop Loss Exits    : {sl_exits}")
     print(f"  ST Flip Exits         : {st_exits}")
     print(f"  EOD Force Exits       : {eod_exits}")
@@ -439,43 +585,49 @@ def export_excel(df, trades, df_trades, df_day):
         loss_days   = int((df_day["Total P&L %"] < 0).sum()) if df_day is not None else 0
 
         summary_rows = [
-            ["STRATEGY INFO",   ""],
-            ["Ticker",          TICKER],
-            ["Interval",        INTERVAL],
-            ["Supertrend",      f"Period={ST_PERIOD}, Multiplier={ST_MULTIPLIER}"],
-            ["Stop Loss",       "Dynamic — ST line value"],
-            ["EOD Exit",        str(MARKET_CLOSE)],
+            ["STRATEGY INFO",    ""],
+            ["Ticker",           TICKER],
+            ["Interval",         INTERVAL],
+            ["Supertrend",       f"Period={ST_PERIOD}, Multiplier={ST_MULTIPLIER}"],
+            ["Stop Loss",        "Dynamic — ST line value"],
+            ["EOD Exit",         str(MARKET_CLOSE)],
             ["", ""],
-            ["TRADE STATS",     ""],
-            ["Total Trades",    total],
-            ["Winners",         f"{wins} ({wins/total*100:.1f}%)"],
-            ["Losers",          f"{losses} ({losses/total*100:.1f}%)"],
+            ["HARD SL & TRAIL SL CONFIG", ""],
+            ["Hard Stop Loss",   f"{'ENABLED' if HARD_SL_ENABLED else 'DISABLED'} — {HARD_SL_PCT}% max loss from entry"],
+            ["Rolling Trail SL", f"{'ENABLED' if TRAIL_SL_ENABLED else 'DISABLED'} — Activates +{TRAIL_ACTIVATE_PTS} pts | Offset {TRAIL_OFFSET_PTS} pts | Step {TRAIL_STEP_PTS} pts"],
+            ["", ""],
+            ["TRADE STATS",      ""],
+            ["Total Trades",     total],
+            ["Winners",          f"{wins} ({wins/total*100:.1f}%)"],
+            ["Losers",           f"{losses} ({losses/total*100:.1f}%)"],
+            ["Hard SL Exits",    int(df_trades["Exit Reason"].str.startswith("Hard SL").sum())],
+            ["Trail SL Exits",   int((df_trades["Exit Reason"] == "Trail SL").sum())],
             ["ST Stop Loss Exits", int((df_trades["Exit Reason"] == "ST Stop Loss").sum())],
-            ["ST Flip Exits",   int(df_trades["Exit Reason"].str.startswith("ST Flip").sum())],
-            ["EOD Exits",       int((df_trades["Exit Reason"] == "EOD Exit").sum())],
+            ["ST Flip Exits",    int(df_trades["Exit Reason"].str.startswith("ST Flip").sum())],
+            ["EOD Exits",        int((df_trades["Exit Reason"] == "EOD Exit").sum())],
             ["", ""],
-            ["P&L STATS",       ""],
-            ["Total P&L %",     round(df_trades["P&L %"].sum(), 4)],
-            ["Avg P&L % / Trade", round(df_trades["P&L %"].mean(), 4)],
-            ["Best Trade %",    round(df_trades["P&L %"].max(), 4)],
-            ["Worst Trade %",   round(df_trades["P&L %"].min(), 4)],
+            ["P&L STATS",        ""],
+            ["Total P&L %",      round(df_trades["P&L %"].sum(), 4)],
+            ["Avg P&L % / Trade",round(df_trades["P&L %"].mean(), 4)],
+            ["Best Trade %",     round(df_trades["P&L %"].max(), 4)],
+            ["Worst Trade %",    round(df_trades["P&L %"].min(), 4)],
             ["", ""],
-            ["POINTS",          ""],
+            ["POINTS",           ""],
             ["Points Captured (wins)", round(win_pts, 2)],
-            ["Points Lost",     round(loss_pts, 2)],
-            ["Net Points",      round(win_pts - loss_pts, 2)],
+            ["Points Lost",      round(loss_pts, 2)],
+            ["Net Points",       round(win_pts - loss_pts, 2)],
             ["", ""],
-            ["DAY STATS",       ""],
+            ["DAY STATS",        ""],
             ["Total Trading Days", len(df_day) if df_day is not None else 0],
-            ["Profit Days",     profit_days],
-            ["Loss Days",       loss_days],
+            ["Profit Days",      profit_days],
+            ["Loss Days",        loss_days],
         ]
         if df_day is not None and not df_day.empty:
             best  = df_day.loc[df_day["Total P&L %"].idxmax()]
             worst = df_day.loc[df_day["Total P&L %"].idxmin()]
             summary_rows += [
-                ["Best Day",    f"{best['Date']}  →  {best['Total P&L %']:.4f}%"],
-                ["Worst Day",   f"{worst['Date']}  →  {worst['Total P&L %']:.4f}%"],
+                ["Best Day",     f"{best['Date']}  →  {best['Total P&L %']:.4f}%"],
+                ["Worst Day",    f"{worst['Date']}  →  {worst['Total P&L %']:.4f}%"],
             ]
         df_summary = pd.DataFrame(summary_rows, columns=["Metric", "Value"])
     else:
@@ -500,6 +652,7 @@ def _style_excel(fname, df_st, df_trades, df_day):
     BLUE_HDR    = "1F3864";  YELLOW_SEC  = "FFD700"
     GRAY_ALT    = "F2F2F2";  WHITE       = "FFFFFF"
     ORANGE      = "FCE4D6";  TEAL_LIGHT  = "DDEBF7"
+    PURPLE_LIGHT= "E2EFDA"
 
     thin_s = Side(style="thin", color="CCCCCC")
     bdr    = Border(left=thin_s, right=thin_s, top=thin_s, bottom=thin_s)
@@ -516,12 +669,6 @@ def _style_excel(fname, df_st, df_trades, df_day):
         for col in ws.columns:
             w = max((len(str(c.value or "")) for c in col), default=8)
             ws.column_dimensions[get_column_letter(col[0].column)].width = min(w + 3, cap)
-
-    def center_all(ws, start=2):
-        for row in ws.iter_rows(min_row=start):
-            for cell in row:
-                cell.alignment = Alignment(horizontal="center", vertical="center")
-                cell.border    = bdr
 
     wb = load_workbook(fname)
 
@@ -561,7 +708,14 @@ def _style_excel(fname, df_st, df_trades, df_day):
                 bg = RED_LIGHT;    result_cell.font = Font(bold=True, color=RED_DARK)
             else:
                 bg = GRAY_ALT if i % 2 == 0 else WHITE
-            if "Stop Loss" in reason:
+            # Hard SL → solid red, Trail SL → purple, ST SL → orange, EOD → teal
+            if reason.startswith("Hard SL"):
+                reason_cell.fill = PatternFill("solid", fgColor="FF0000")
+                reason_cell.font = Font(bold=True, color="FFFFFF")
+            elif reason == "Trail SL":
+                reason_cell.fill = PatternFill("solid", fgColor="7B2D8B")
+                reason_cell.font = Font(bold=True, color="FFFFFF")
+            elif "Stop Loss" in reason:
                 reason_cell.fill = PatternFill("solid", fgColor=ORANGE)
                 reason_cell.font = Font(bold=True, color="C55A11")
             elif "EOD" in reason:
@@ -579,11 +733,7 @@ def _style_excel(fname, df_st, df_trades, df_day):
         ws = wb["Daily P&L"]
         hdr(ws)
         ws.freeze_panes = "A2"
-        result_col = ws.max_column   # "Day Result" is last column
-        pnl_col    = None
-        for cell in ws[1]:
-            if "Total P&L" in str(cell.value or ""):
-                pnl_col = cell.column
+        result_col = ws.max_column
         for i, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row), 1):
             day_result_cell = row[result_col - 1]
             day_result      = str(day_result_cell.value or "")
@@ -602,13 +752,20 @@ def _style_excel(fname, df_st, df_trades, df_day):
     # ── Sheet 4: Summary ─────────────────────────────────────────────────
     ws = wb["Summary"]
     hdr(ws)
-    SECTION_LABELS = {"STRATEGY INFO", "TRADE STATS", "P&L STATS", "POINTS", "DAY STATS"}
+    SECTION_LABELS = {"STRATEGY INFO", "HARD SL & TRAIL SL CONFIG", "TRADE STATS", "P&L STATS", "POINTS", "DAY STATS"}
+    HIGHLIGHT_ROWS = {"Hard Stop Loss", "Rolling Trail SL"}
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
         label = str(row[0].value or "")
         if label in SECTION_LABELS:
             for cell in row:
-                cell.fill = PatternFill("solid", fgColor=YELLOW_SEC)
-                cell.font = Font(bold=True, color="000000", size=10)
+                cell.fill   = PatternFill("solid", fgColor=YELLOW_SEC)
+                cell.font   = Font(bold=True, color="000000", size=10)
+                cell.border = bdr
+            continue
+        if label in HIGHLIGHT_ROWS:
+            for cell in row:
+                cell.fill   = PatternFill("solid", fgColor=PURPLE_LIGHT)
+                cell.font   = Font(bold=True, color="375623")
                 cell.border = bdr
             continue
         val_cell = row[1] if len(row) > 1 else None
@@ -624,7 +781,6 @@ def _style_excel(fname, df_st, df_trades, df_day):
                     color=GREEN_DARK if isinstance(v, (int, float)) and v > 0 else RED_DARK)
     ws.column_dimensions["A"].width = 30
     ws.column_dimensions["B"].width = 28
-
     wb.save(fname)
 
 
@@ -686,6 +842,10 @@ def build_chart(df, trades):
         loy = xp[mask & (rs == "LOSS")].tolist()
         slx = xt[mask & (ex == "ST Stop Loss")].tolist()
         sly = xp[mask & (ex == "ST Stop Loss")].tolist()
+        hsx = xt[mask & ex.str.startswith("Hard SL")].tolist()
+        hsy = xp[mask & ex.str.startswith("Hard SL")].tolist()
+        tsx = xt[mask & (ex == "Trail SL")].tolist()
+        tsy = xp[mask & (ex == "Trail SL")].tolist()
 
         if lx:
             fig.add_trace(go.Scatter(x=lx, y=ly, mode="markers", name="Long Entry",
@@ -707,20 +867,32 @@ def build_chart(df, trades):
             fig.add_trace(go.Scatter(x=slx, y=sly, mode="markers", name="ST Stop Loss Hit",
                 marker=dict(symbol="diamond", size=11, color="#fb923c",
                             line=dict(color="#c2410c", width=1.5))))
+        if hsx:
+            fig.add_trace(go.Scatter(x=hsx, y=hsy, mode="markers",
+                name=f"Hard SL Hit ({HARD_SL_PCT}%)",
+                marker=dict(symbol="hexagram", size=14, color="#ff0000",
+                            line=dict(color="white", width=1.5))))
+        if tsx:
+            fig.add_trace(go.Scatter(x=tsx, y=tsy, mode="markers",
+                name="Trail SL Hit",
+                marker=dict(symbol="star", size=14, color="#a855f7",
+                            line=dict(color="white", width=1.5))))
 
+    trail_label = f"TrailSL +{TRAIL_ACTIVATE_PTS}pts/{TRAIL_OFFSET_PTS}off/{TRAIL_STEP_PTS}step + " if TRAIL_SL_ENABLED else ""
+    hard_sl_label = f"HardSL {HARD_SL_PCT}% + " if HARD_SL_ENABLED else ""
     fig.update_layout(
         template="plotly_dark",
         height=750,
         xaxis_rangeslider_visible=False,
         legend=dict(orientation="h", yanchor="bottom", y=1.01,
                     xanchor="right", x=1, font=dict(size=10)),
-        margin=dict(l=60, r=40, t=100, b=50),
+        margin=dict(l=60, r=40, t=110, b=50),
         font=dict(family="monospace", size=11),
         title=dict(
             text=(f"<b>{TICKER}</b> | {INTERVAL} | Supertrend({ST_PERIOD},{ST_MULTIPLIER})<br>"
                   f"<span style='font-size:11px;color:#94a3b8'>"
                   f"Long: ST below price  |  Short: ST above price  |  "
-                  f"Stop Loss = ST line value  |  Exit: price crosses ST</span>"),
+                  f"{hard_sl_label}{trail_label}Stop Loss = ST line</span>"),
             x=0.5, xanchor="center"
         )
     )
