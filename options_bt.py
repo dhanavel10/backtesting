@@ -53,8 +53,8 @@ from openpyxl import load_workbook
 #  CONFIGURATION
 # ═══════════════════════════════════════════════════════════════
 TICKER        = "^NSEI"
-INTERVAL      = "5m"
-PERIOD        = "60d"
+INTERVAL      = "1m"
+PERIOD        = "7d"
 START         = None
 END           = None
 

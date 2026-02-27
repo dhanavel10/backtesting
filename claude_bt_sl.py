@@ -42,18 +42,18 @@ from openpyxl import load_workbook
 #  CONFIGURATION
 # ═══════════════════════════════════════════════════════════════
 TICKER        = "^NSEI"       # ^NSEI | RELIANCE.NS | TCS.NS etc.
-INTERVAL      = "5m"         # 1m / 5m / 15m (intraday, last 60d only)
-PERIOD        = "60d"         # used when START=None, END=None
+INTERVAL      = "1m"         # 1m / 5m / 15m (intraday, last 60d only)
+PERIOD        = "7d"         # used when START=None, END=None
 START         = None          # e.g. "2026-01-25"
 END           = None          # e.g. "2026-02-23"
 
 # Supertrend settings
-ST_PERIOD     = 10
-ST_MULTIPLIER = 3.0
+ST_PERIOD     = 14
+ST_MULTIPLIER = 3.5
 
 # ── Hard Stop Loss ──────────────────────────────────────────────
 HARD_SL_ENABLED = True          # Set False to disable (reverts to pure ST SL behaviour)
-HARD_SL_PCT     = 0.3        # Max loss allowed from entry price (%)
+HARD_SL_PCT     = 0.25        # Max loss allowed from entry price (%)
                                  # Exit fires when loss reaches this level,
                                  # BEFORE the ST line is even touched.
                                  # Works independently — does NOT replace ST SL,
@@ -370,6 +370,50 @@ def build_daily_summary(trades):
 
     return pd.DataFrame(daily)
 
+def build_time_slot_summary(trades):
+    """Break down P&L by intraday time slots."""
+    if not trades:
+        return pd.DataFrame()
+
+    SLOTS = [
+        ("09:15", "09:30"), ("09:30", "10:00"), ("10:00", "10:30"),
+        ("10:30", "11:00"), ("11:00", "11:30"), ("11:30", "12:00"),
+        ("12:00", "12:30"), ("12:30", "13:00"), ("13:00", "13:30"),
+        ("13:30", "14:00"), ("14:00", "14:30"), ("14:30", "15:00"),
+        ("15:00", "15:15"),
+    ]
+
+    df_t = pd.DataFrame(trades)
+    df_t["Entry_dt"] = pd.to_datetime(df_t["Entry Time"], format="%Y-%m-%d %H:%M")
+    df_t["Entry_tod"] = df_t["Entry_dt"].dt.strftime("%H:%M")
+
+    rows = []
+    for s, e in SLOTS:
+        mask = (df_t["Entry_tod"] >= s) & (df_t["Entry_tod"] < e)
+        grp  = df_t[mask]
+        if grp.empty:
+            rows.append({"Time Slot": f"{s}–{e}", "Trades": 0,
+                         "Winners": 0, "Losers": 0, "Win Rate %": 0,
+                         "Total P&L %": 0, "Avg P&L %": 0,
+                         "Best %": 0, "Worst %": 0, "Verdict": "—"})
+            continue
+        total = len(grp); wins = (grp["P&L %"] > 0).sum()
+        pnl   = grp["P&L %"].sum()
+        rows.append({
+            "Time Slot"  : f"{s}–{e}",
+            "Trades"     : total,
+            "Winners"    : wins,
+            "Losers"     : total - wins,
+            "Win Rate %" : round(wins / total * 100, 1),
+            "Total P&L %": round(pnl, 4),
+            "Avg P&L %"  : round(grp["P&L %"].mean(), 4),
+            "Best %"     : round(grp["P&L %"].max(), 4),
+            "Worst %"    : round(grp["P&L %"].min(), 4),
+            "Verdict"    : "🟢 Trade" if pnl > 0 and wins/total >= 0.5 else "🔴 Avoid",
+        })
+
+    return pd.DataFrame(rows)
+
 
 # ───────────────────────────────────────────────────────────────
 def print_results(trades):
@@ -382,6 +426,7 @@ def print_results(trades):
     print(f"  Short: ST above price  →  Stop Loss = ST line value  →  Exit when High ≥ ST line")
     print(f"  🛑 Hard SL : {'ON  | Max loss = ' + str(HARD_SL_PCT) + '% from entry (fires before ST SL if hit first)' if HARD_SL_ENABLED else 'OFF (pure ST SL mode)'}")
     print(sep)
+    
 
     if not trades:
         print("  ⚠  No trades found. Try a longer PERIOD or different INTERVAL.")
@@ -460,6 +505,7 @@ def print_results(trades):
     print(f"  Best Day              : {best_day['Date']}  →  {best_day['Total P&L %']:.4f}%  |  Net Pts: {best_day['Net Points']:.2f}")
     print(f"  Worst Day             : {worst_day['Date']}  →  {worst_day['Total P&L %']:.4f}%  |  Net Pts: {worst_day['Net Points']:.2f}")
     print(sep + "\n")
+    print(build_time_slot_summary(trades).to_string(index=False))
 
     return df_t, df_day
 

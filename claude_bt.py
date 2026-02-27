@@ -37,7 +37,7 @@ from openpyxl import load_workbook
 # ═══════════════════════════════════════════════════════════════
 TICKER        = "^NSEI"       # ^NSEI | RELIANCE.NS | TCS.NS etc.
 INTERVAL      = "5m"         # 1m / 5m / 15m (intraday, last 60d only)
-PERIOD        = "60d"         # used when START=None, END=None
+PERIOD        = "30d"         # used when START=None, END=None
 START         = None          # e.g. "2026-01-25"
 END           = None          # e.g. "2026-02-23"
 
@@ -146,7 +146,7 @@ def fetch_data():
     kw = dict(interval=INTERVAL, auto_adjust=True, progress=True)
     df = (yf.download(TICKER, start=START, end=END, **kw)
           if START and END else
-          yf.download(TICKER, period=PERIOD, **kw))
+          yf.download("^NSEI", period="7d", interval="1m"))
 
     if df.empty:
         raise ValueError(
