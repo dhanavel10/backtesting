@@ -1,0 +1,10 @@
+-> Entry conditions
+- super trend positive, include HTF entry condition (if both LTF and HTF ST are bullish go long) -> true or false to enable or disable
+- above ema 9 with gap of 20 points from open price and ema 9
+- rolling ema 9 slope for recent 5 candles, if the angle of the slope is very less (near horizontal) wait, dont enter the trade.
+- candle size > 12
+
+-> Exit conditions
+- .25% SL
+- if price falls 30 points below the peak ema 9 in that specific trade exit the trade
+- Calculate the rolling ema recent 5 candles, if the ema slope angle changes to opposite direction exit the trade.

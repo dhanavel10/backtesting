@@ -1,0 +1,1850 @@
+"""
+Supertrend Intraday Backtesting Strategy — v3.0
+─────────────────────────────────────────────────────────────────────────────
+DATA SOURCE : CSV files  OR  yfinance  (toggle DATA_SOURCE in CONFIG)
+
+  CSV MODE    (DATA_SOURCE = "csv")
+    BASE_CSV  — your 1m (or any TF) OHLC file
+    HTF_CSV   — your HTF OHLC file  (set None to disable HTF filter)
+
+  YFINANCE MODE  (DATA_SOURCE = "yfinance")
+    YF_TICKER        — Yahoo Finance ticker  e.g. "^NSEI", "RELIANCE.NS"
+    YF_BASE_INTERVAL — base TF  e.g. "1m", "2m", "5m"
+    YF_HTF_INTERVAL  — HTF      e.g. "15m", "30m", "1h"  (None = disabled)
+    YF_PERIOD        — lookback  e.g. "5d", "7d", "30d", "60d"
+                       Note: 1m data is limited to the last 7 days by Yahoo
+    YF_START / YF_END — use a fixed date range instead of YF_PERIOD
+                        set YF_START = None to use YF_PERIOD
+
+CSV FORMAT  : Standard columns (case-insensitive, auto-detected)
+  datetime, open, high, low, close, volume
+  DateTime column accepts any standard format (auto-parsed)
+
+FILTERS:
+  1. HTF Filter        — only trade in direction of HTF Supertrend
+                         (auto-disabled if HTF_CSV = None  or  YF_HTF_INTERVAL = None)
+  2. Trade Window      — only enter during profitable time slots
+  3. Confirm Candles   — wait N candles after ST flip before entering
+  4. Min Gap           — skip if price too close to ST line (choppy)
+  5. Volume            — require volume > N × 20-bar average
+  6. Max Trades/Day    — hard cap on daily entries
+
+ENTRIES:
+  Long  : ST below price  →  enter at close
+  Short : ST above price  →  enter at close
+
+EXITS (whichever fires first):
+  Hard SL      →  fixed % loss from entry
+  ST SL        →  price crosses ST line (base TF or HTF ST depending on config)
+  EOD          →  force exit at 15:15 IST
+
+EXIT IMPROVEMENTS (v3.1):
+  EXIT_USE_HTF_ST   — use the wider HTF ST line as exit instead of tight 1m ST
+                      lets the trade breathe, captures bigger moves
+  CLOSE_BASED_EXIT  — exit only when candle CLOSES beyond ST line, not just
+                      when intracandle Low/High touches it (reduces whipsaws)
+
+OUTPUTS:
+  Console  : trade log + per-day P&L + time-slot P&L + holding time + summary
+  Excel    : 7 sheets — Supertrend Data, Trade Log, Daily P&L,
+             Time Slot P&L, Holding Time Summary, Holding By Time Slot, Summary
+  HTML     : interactive candlestick + ST chart
+
+Install: pip install pandas plotly openpyxl pytz numpy yfinance
+"""
+
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+import pytz
+import os
+from datetime import time as dtime
+from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
+from openpyxl import load_workbook
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  CONFIG
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── DATA SOURCE TOGGLE ─────────────────────────────────────────────────────────
+DATA_SOURCE = "csv"          # "csv"      → load from local CSV files (default)
+                             # "yfinance" → download live data from Yahoo Finance
+
+# ── CSV settings  (used when DATA_SOURCE = "csv") ─────────────────────────────
+BASE_CSV = "Book1min.csv"
+HTF_CSV  = "Book1.csv"   # set to None to disable HTF filter
+
+# ── yfinance settings  (used when DATA_SOURCE = "yfinance") ───────────────────
+YF_TICKER        = "^NSEI"    # Yahoo Finance ticker symbol
+YF_BASE_INTERVAL = "1m"       # base TF interval: "1m","2m","5m","15m","30m","1h"
+YF_HTF_INTERVAL  = "15m"      # HTF interval: "5m","15m","30m","1h"  or None
+YF_PERIOD        = "7d"       # lookback period: "1d","5d","7d","30d","60d","max"
+                               # (1m data limited to last 7 days by Yahoo Finance)
+YF_START         = None       # e.g. "2024-01-01" — set both to use a date range
+YF_END           = None       # e.g. "2024-06-30" — if YF_START=None, YF_PERIOD is used
+
+# ── Label shown in all outputs ─────────────────────────────────────────────────
+SYMBOL   = "NIFTY"
+
+ST_PERIOD         = 14
+ST_MULTIPLIER     = 4.0
+HTF_ST_PERIOD     = 10
+HTF_ST_MULTIPLIER = 3.0
+
+HARD_SL_ENABLED = True
+HARD_SL_PCT     = 0.25
+
+EXIT_USE_HTF_ST  = False
+CLOSE_BASED_EXIT = True
+
+TRADE_WINDOW_ENABLED = True
+TRADE_WINDOWS = [
+    (dtime(9, 30), dtime(11, 30)),
+    (dtime(14,  0), dtime(14, 45)),
+]
+
+CONFIRM_CANDLES = 10
+
+MIN_GAP_ENABLED = True
+MIN_GAP_PCT     = 0.20
+
+VOLUME_FILTER_ENABLED = False
+VOLUME_MULTIPLIER     = 1.5
+VOLUME_LOOKBACK       = 25
+
+MAX_TRADES_PER_DAY_ENABLED = True
+MAX_TRADES_PER_DAY         = 5
+
+MARKET_OPEN  = dtime(9, 15)
+MARKET_CLOSE = dtime(15, 15)
+IST          = pytz.timezone("Asia/Kolkata")
+
+CHART_DAYS = 5
+
+# ── OPTION P&L CONFIG (Greeks-based approximation) ───────────────────────────
+# ΔC ≈ (Δ × ΔS) + (½ × Γ × ΔS²) + (Θ × Δt) + (Vega × Δσ)
+OPTION_PNL_ENABLED = True          # Toggle the entire option P&L feature
+DELTA              = 0.20           # Option Delta  (∂C/∂S)
+GAMMA              = 0.0005         # Option Gamma  (∂²C/∂S²)
+THETA_DAILY        = -10.53         # Daily Theta in ₹ (negative for long options)
+VEGA               = 0.0            # Option Vega  (∂C/∂σ); used if VIX CSV loaded
+LOT_SIZE           = 65             # Contract lot size (NIFTY = 75, BANKNIFTY = 15)
+TRADING_HOURS_DAY  = 6.25           # Indian market hours per day
+VIX_CSV            = "vixi.csv"           # Path to India VIX CSV, e.g. "india_vix.csv"
+                                    # Set None to skip Vega; use Delta+Gamma+Theta only
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  END OF CONFIG
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def fmt(ts):
+    return ts.strftime("%Y-%m-%d %H:%M") if pd.notna(ts) else "—"
+
+
+def mins_to_hhmm(m):
+    """Convert integer minutes to HH:MM string."""
+    m = int(round(m))
+    return f"{m // 60}H:{m % 60:02d}M"
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+#  VIX LOADER
+# ───────────────────────────────────────────────────────────────────────────────
+def load_vix_csv(path):
+    """
+    Load India VIX CSV (daily or intraday) and return a timezone-aware Series
+    indexed by datetime.
+
+    Supports columns:  Date (date-only OK) + Price / VIX / Close / LTP
+    Daily VIX rows are stamped at 09:15 IST (market open) so that
+    Series.asof(intraday_timestamp) correctly returns that day's VIX
+    for any trade entered on that date.
+    Returns None on any failure.
+    """
+    if path is None:
+        return None
+    if not os.path.exists(path):
+        print(f"  \u26a0  VIX_CSV not found: '{path}' \u2014 Vega effect DISABLED.")
+        return None
+    try:
+        raw = pd.read_csv(path)
+        print(f"  VIX CSV columns detected: {list(raw.columns)}")
+
+        # ── Detect date column ─────────────────────────────────────────────
+        dt_col = _find_col(raw.columns, _DT_CANDS + ["date"])
+        if dt_col is None:
+            # fallback: first column that parses as dates
+            for col in raw.columns:
+                attempt = pd.to_datetime(raw[col], errors="coerce", dayfirst=True)
+                if attempt.notna().mean() > 0.8:
+                    dt_col = col
+                    break
+        if dt_col is None:
+            print("  \u26a0  VIX CSV has no date column \u2014 Vega effect DISABLED.")
+            return None
+
+        # ── Detect VIX value column ────────────────────────────────────────
+        # Supports: vix, india vix, price, close, ltp, open, high, low, c
+        vix_col = _find_col(raw.columns,
+                            ["vix", "india vix", "indiavix",
+                             "price", "close", "ltp", "c", "open"])
+        if vix_col is None:
+            print("  \u26a0  VIX CSV has no VIX/Price column \u2014 Vega effect DISABLED.")
+            return None
+
+        print(f"  VIX \u2192 date col='{dt_col}'  value col='{vix_col}'")
+
+        # ── Parse dates ────────────────────────────────────────────────────
+        raw[dt_col] = pd.to_datetime(raw[dt_col], errors="coerce", dayfirst=True)
+        raw = raw.dropna(subset=[dt_col]).copy()
+
+        # ── If daily (no time component), stamp at 09:15 IST (market open) ─
+        # This ensures Series.asof(intraday_time) finds the right day's VIX
+        has_time = (raw[dt_col].dt.hour != 0).any() or (raw[dt_col].dt.minute != 0).any()
+        if not has_time:
+            raw[dt_col] = raw[dt_col] + pd.Timedelta(hours=9, minutes=15)
+            print("  VIX data is daily \u2014 timestamps set to 09:15 IST for correct asof() matching.")
+
+        raw = raw.set_index(dt_col)
+        raw.index.name = "Datetime"
+
+        # ── Localise to IST ────────────────────────────────────────────────
+        if raw.index.tz is None:
+            raw.index = raw.index.tz_localize(IST, ambiguous="infer",
+                                              nonexistent="shift_forward")
+        else:
+            raw.index = raw.index.tz_convert(IST)
+
+        # ── Clean numeric, sort, return ────────────────────────────────────
+        s = pd.to_numeric(raw[vix_col], errors="coerce").dropna()
+        s = s.sort_index()
+        print(f"  \u2705  VIX CSV loaded: {len(s)} rows "
+              f"({s.index[0].strftime('%Y-%m-%d')} \u2192 {s.index[-1].strftime('%Y-%m-%d')}) "
+              f"\u2014 Vega effect ENABLED.")
+        return s
+    except Exception as ex:
+        print(f"  \u26a0  VIX CSV load error: {ex} \u2014 Vega effect DISABLED.")
+        return None
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+#  OPTION P&L ENGINE  (Delta + Gamma + Theta + Vega)
+# ───────────────────────────────────────────────────────────────────────────────
+def compute_option_pnl(direction, entry_s, exit_s, holding_mins,
+                       entry_vix=None, exit_vix=None):
+    """
+    Approximate option price change using second-order Taylor expansion:
+        ΔC ≈ (Δ × ΔS) + (½ × Γ × ΔS²) + (Θ_hr × holding_hrs) + (Vega × Δσ)
+
+    direction    : 'long' or 'short' (underlying trade direction)
+    entry_s / exit_s : underlying entry & exit prices
+    holding_mins : integer holding duration
+    entry_vix / exit_vix : VIX values at entry/exit (None → vega_effect = 0)
+
+    Returns dict with all components + totals.
+    """
+    # ΔS — direction-adjusted so a winning underlying trade gives +ΔS
+    if direction == "long":
+        ds = exit_s - entry_s
+    else:  # short
+        ds = entry_s - exit_s
+
+    holding_hours  = holding_mins / 60.0
+    theta_per_hour = THETA_DAILY / TRADING_HOURS_DAY
+
+    delta_effect = DELTA * ds
+    gamma_effect = 0.5 * GAMMA * (ds ** 2)
+    theta_effect = theta_per_hour * holding_hours
+
+    # Vega effect — only if VIX values are available
+    if entry_vix is not None and exit_vix is not None and VEGA != 0:
+        d_sigma      = exit_vix - entry_vix          # change in implied vol proxy
+        vega_effect  = VEGA * d_sigma
+    else:
+        d_sigma     = 0.0
+        vega_effect = 0.0
+
+    option_change = delta_effect + gamma_effect + theta_effect + vega_effect
+    option_pnl    = option_change * LOT_SIZE
+
+    # Dynamic delta
+    new_delta = DELTA + (GAMMA * ds)
+
+    # Break-even ΔS:  DELTA*x + 0.5*GAMMA*x² + (theta_effect + vega_effect) = 0
+    # Solve quadratic: 0.5*GAMMA*x² + DELTA*x + (theta + vega) = 0
+    carry = theta_effect + vega_effect
+    be_up = be_dn = float("nan")
+    try:
+        if GAMMA != 0:
+            roots = np.roots([0.5 * GAMMA, DELTA, carry])
+            real_roots = [r.real for r in roots if abs(r.imag) < 1e-9]
+            positives  = [r for r in real_roots if r > 0]
+            negatives  = [r for r in real_roots if r < 0]
+            be_up = round(min(positives), 4) if positives else float("nan")
+            be_dn = round(max(negatives), 4) if negatives else float("nan")
+        elif DELTA != 0:
+            # Linear fallback
+            root  = -carry / DELTA
+            be_up = round(root, 4) if root > 0 else float("nan")
+            be_dn = round(root, 4) if root < 0 else float("nan")
+    except Exception:
+        pass
+
+    return {
+        "Option ΔS"       : round(ds, 4),
+        "Delta Effect"    : round(delta_effect, 4),
+        "Gamma Effect"    : round(gamma_effect, 4),
+        "Theta Effect"    : round(theta_effect, 4),
+        "Vega Effect"     : round(vega_effect, 4),
+        "Δσ (VIX chg)"    : round(d_sigma, 4),
+        "Option Change"   : round(option_change, 4),
+        "Option P&L ₹"    : round(option_pnl, 2),
+        "New Delta"       : round(new_delta, 4),
+        "Breakeven ΔS↑"  : be_up,
+        "Breakeven ΔS↓"  : be_dn,
+        "Option Result"   : "WIN" if option_pnl > 0 else "LOSS",
+    }
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+#  SUPERTREND ENGINE
+# ───────────────────────────────────────────────────────────────────────────────
+def compute_supertrend(df, period, multiplier):
+    high  = df["High"].values.astype(float)
+    low   = df["Low"].values.astype(float)
+    close = df["Close"].values.astype(float)
+    n     = len(df)
+
+    tr = np.maximum(high[1:] - low[1:],
+         np.maximum(np.abs(high[1:] - close[:-1]),
+                    np.abs(low[1:]  - close[:-1])))
+
+    atr = np.full(n, np.nan)
+    if n > period:
+        atr[period] = tr[:period].mean()
+        for j in range(period + 1, n):
+            atr[j] = (atr[j-1] * (period - 1) + tr[j-1]) / period
+
+    hl2         = (high + low) / 2.0
+    upper_basic = hl2 + multiplier * atr
+    lower_basic = hl2 - multiplier * atr
+
+    upper = np.full(n, np.nan)
+    lower = np.full(n, np.nan)
+    bull  = np.full(n, True, dtype=bool)
+
+    for j in range(period, n):
+        if np.isnan(upper[j-1]):
+            upper[j] = upper_basic[j];  lower[j] = lower_basic[j]
+            bull[j]  = close[j] >= lower[j];  continue
+        upper[j] = (upper_basic[j]
+                    if upper_basic[j] < upper[j-1] or close[j-1] > upper[j-1]
+                    else upper[j-1])
+        lower[j] = (lower_basic[j]
+                    if lower_basic[j] > lower[j-1] or close[j-1] < lower[j-1]
+                    else lower[j-1])
+        bull[j] = (close[j] >= lower[j]) if bull[j-1] else (close[j] > upper[j])
+
+    df = df.copy()
+    df["ST_val"]       = np.where(bull, lower, upper)
+    df["ST_bull"]      = bull
+    df["ST_direction"] = np.where(bull, "Bullish", "Bearish")
+    return df
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+#  CSV LOADER  (unchanged)
+# ───────────────────────────────────────────────────────────────────────────────
+_DT_CANDS = ["datetime","date","time","timestamp","date/time","date time"]
+_O_CANDS  = ["open","o"]
+_H_CANDS  = ["high","h"]
+_L_CANDS  = ["low","l"]
+_C_CANDS  = ["close","ltp","last","c"]
+_V_CANDS  = ["volume","vol","v"]
+
+
+def _find_col(columns, candidates):
+    lmap = {c.lower().strip(): c for c in columns}
+    for cand in candidates:
+        if cand in lmap:
+            return lmap[cand]
+    return None
+
+
+def load_csv(path, label="CSV"):
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"\n  ❌  File not found : '{path}'\n"
+            f"      ↳ Check the BASE_CSV / HTF_CSV paths in the CONFIG section.\n"
+        )
+
+    print(f"\n  Loading {label}: {path} …")
+    df = pd.read_csv(path)
+    print(f"    Shape: {df.shape}  |  Columns: {list(df.columns)}")
+
+    dt_col = _find_col(df.columns, _DT_CANDS)
+    o_col  = _find_col(df.columns, _O_CANDS)
+    h_col  = _find_col(df.columns, _H_CANDS)
+    l_col  = _find_col(df.columns, _L_CANDS)
+    c_col  = _find_col(df.columns, _C_CANDS)
+    v_col  = _find_col(df.columns, _V_CANDS)
+
+    print(f"    Mapped  → dt='{dt_col}' | open='{o_col}' | high='{h_col}' | "
+          f"low='{l_col}' | close='{c_col}' | volume='{v_col or 'not found'}'")
+
+    missing = [n for n, c in [("datetime", dt_col), ("open", o_col),
+                                ("high", h_col), ("low", l_col), ("close", c_col)]
+               if c is None]
+    if missing:
+        raise ValueError(
+            f"\n  ❌  Could not detect required columns: {missing}\n"
+            f"      Columns in file : {list(df.columns)}\n"
+            f"      Please rename to: datetime, open, high, low, close, volume\n"
+        )
+
+    rename = {dt_col: "__dt", o_col: "Open", h_col: "High",
+              l_col: "Low",   c_col: "Close"}
+    if v_col:
+        rename[v_col] = "Volume"
+
+    df = df[list(rename.keys())].rename(columns=rename)
+
+    # ── Auto-detect datetime format ────────────────────────────────────────
+    formats_to_try = [
+        "%d-%m-%Y %H:%M",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%d-%m-%Y %H:%M:%S",
+        "%m/%d/%Y %H:%M",
+        "%Y-%m-%dT%H:%M:%S",
+    ]
+
+    parsed = None
+    for date_fmt in formats_to_try:
+        attempt = pd.to_datetime(df["__dt"], format=date_fmt, errors="coerce")
+        if attempt.notna().mean() > 0.95:
+            parsed = attempt
+            print(f"    DateTime format : '{date_fmt}'")
+            break
+
+    if parsed is None:
+        parsed = pd.to_datetime(df["__dt"], errors="coerce")
+        print(f"    ⚠  Format not detected — using auto-parse")
+
+    df["__dt"] = parsed
+    df = df.dropna(subset=["__dt"]).copy()
+
+    df = df.set_index("__dt")
+    df.index.name = "Datetime"
+
+    if df.index.tz is None:
+        df.index = df.index.tz_localize(IST, ambiguous="infer",
+                                         nonexistent="shift_forward")
+    else:
+        df.index = df.index.tz_convert(IST)
+
+    df.sort_index(inplace=True)
+
+    for col in ["Open", "High", "Low", "Close"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    if "Volume" in df.columns:
+        df["Volume"] = pd.to_numeric(df["Volume"], errors="coerce").fillna(0)
+    else:
+        df["Volume"] = 0.0
+
+    df.dropna(subset=["Open","High","Low","Close"], inplace=True)
+
+    df = df[df.index.notna()].copy()
+    tod = df.index.time
+    df  = df[(tod >= MARKET_OPEN) & (tod <= MARKET_CLOSE)].copy()
+
+    print(f"    Clean rows: {len(df)}  |  "
+          f"{fmt(df.index[0])} → {fmt(df.index[-1])}")
+    return df
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+#  YFINANCE LOADER  ← NEW  (only new function added; nothing else changed)
+# ───────────────────────────────────────────────────────────────────────────────
+def _normalise_yf_df(raw):
+    """
+    Accept a yfinance DataFrame (any version) and return a clean
+    DataFrame with columns Open, High, Low, Close, Volume and a
+    DatetimeIndex.  Handles:
+      • MultiIndex columns  (ticker in level-0 or level-1)
+      • Single-level columns with mixed capitalisation
+      • 'Adj Close' vs 'Close'
+    """
+    # ── Flatten MultiIndex if present ─────────────────────────────────────
+    if isinstance(raw.columns, pd.MultiIndex):
+        # yfinance ≥0.2 returns (Price, Ticker) MultiIndex;
+        # get_level_values(0) gives the price names we want.
+        raw.columns = raw.columns.get_level_values(0)
+
+    # ── Normalise column names to Title Case ──────────────────────────────
+    raw.columns = [str(c).strip().title() for c in raw.columns]
+
+    # Rename 'Adj Close' → 'Close' only if plain 'Close' is absent
+    if "Adj Close" in raw.columns and "Close" not in raw.columns:
+        raw = raw.rename(columns={"Adj Close": "Close"})
+
+    # Keep only what we need
+    keep = [c for c in ["Open","High","Low","Close","Volume"] if c in raw.columns]
+    df = raw[keep].copy()
+
+    if "Volume" not in df.columns:
+        df["Volume"] = 0.0
+
+    return df
+
+
+def load_yfinance(ticker, interval, label="yfinance"):
+    """
+    Download OHLCV data from Yahoo Finance and return a clean DataFrame
+    in exactly the same format as load_csv() produces:
+      - IST-localised DatetimeIndex named 'Datetime'
+      - Columns: Open, High, Low, Close, Volume  (numeric)
+      - Filtered to MARKET_OPEN … MARKET_CLOSE
+    """
+    try:
+        import yfinance as yf
+    except ImportError:
+        raise ImportError(
+            "\n  ❌  yfinance is not installed.\n"
+            "      Run:  pip install yfinance\n"
+        )
+
+    print(f"\n  Downloading {label}: ticker={ticker}  interval={interval} …")
+
+    # Build download kwargs
+    dl_kwargs = dict(
+        tickers   = ticker,
+        interval  = interval,
+        auto_adjust = True,
+        progress  = False,
+    )
+    if YF_START is not None:
+        dl_kwargs["start"] = YF_START
+        if YF_END is not None:
+            dl_kwargs["end"] = YF_END
+        print(f"    Date range  : {YF_START} → {YF_END or 'today'}")
+    else:
+        dl_kwargs["period"] = YF_PERIOD
+        print(f"    Period      : {YF_PERIOD}")
+
+    raw = yf.download(**dl_kwargs)
+
+    if raw is None or raw.empty:
+        raise ValueError(
+            f"\n  ❌  yfinance returned no data for ticker='{ticker}' "
+            f"interval='{interval}'.\n"
+            f"      • Check the ticker symbol is correct for Yahoo Finance.\n"
+            f"      • 1m data is limited to the last 7 days.\n"
+            f"      • 2m/5m/15m/30m data is limited to the last 60 days.\n"
+        )
+
+    print(f"    Raw shape   : {raw.shape}")
+
+    # ── Normalise to Open/High/Low/Close/Volume ────────────────────────────
+    df = _normalise_yf_df(raw)
+    df.index.name = "Datetime"
+
+    # ── Timezone → IST ────────────────────────────────────────────────────
+    if df.index.tz is None:
+        df.index = df.index.tz_localize("UTC", ambiguous="infer",
+                                         nonexistent="shift_forward")
+    df.index = df.index.tz_convert(IST)
+
+    df.sort_index(inplace=True)
+
+    # ── Numeric coercion ──────────────────────────────────────────────────
+    for col in ["Open", "High", "Low", "Close"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df["Volume"] = pd.to_numeric(df["Volume"], errors="coerce").fillna(0)
+    df.dropna(subset=["Open","High","Low","Close"], inplace=True)
+
+    # ── Market hours filter (same as load_csv) ────────────────────────────
+    df = df[df.index.notna()].copy()
+    tod = df.index.time
+    df  = df[(tod >= MARKET_OPEN) & (tod <= MARKET_CLOSE)].copy()
+
+    if df.empty:
+        raise ValueError(
+            f"\n  ❌  No data left after market-hours filter for {ticker}.\n"
+            f"      Verify MARKET_OPEN/MARKET_CLOSE and that the ticker trades "
+            f"on NSE/BSE hours.\n"
+        )
+
+    print(f"    Clean rows  : {len(df)}  |  "
+          f"{fmt(df.index[0])} → {fmt(df.index[-1])}")
+    return df
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+#  FETCH / PREPARE ALL DATA  ← only this function updated to route the source
+# ───────────────────────────────────────────────────────────────────────────────
+def fetch_data():
+    src = DATA_SOURCE.strip().lower()
+
+    # ── Load base TF data ──────────────────────────────────────────────────
+    if src == "csv":
+        print(f"\n  ℹ  DATA_SOURCE = 'csv'")
+        df = load_csv(BASE_CSV, label="Base TF CSV")
+        htf_source_path = HTF_CSV          # None or a file path
+    elif src == "yfinance":
+        print(f"\n  ℹ  DATA_SOURCE = 'yfinance'  |  Ticker: {YF_TICKER}")
+        df = load_yfinance(YF_TICKER, YF_BASE_INTERVAL, label="Base TF (yfinance)")
+        htf_source_path = YF_HTF_INTERVAL  # None or an interval string
+    else:
+        raise ValueError(
+            f"\n  ❌  Unknown DATA_SOURCE='{DATA_SOURCE}'.\n"
+            f"      Set it to 'csv' or 'yfinance' in the CONFIG section.\n"
+        )
+
+    df = compute_supertrend(df, ST_PERIOD, ST_MULTIPLIER)
+    df.dropna(inplace=True)
+
+    htf_enabled = False
+
+    if htf_source_path is not None:
+        try:
+            # ── Load HTF data (same source as base) ────────────────────────
+            if src == "csv":
+                df_htf = load_csv(htf_source_path, label="HTF CSV")
+            else:
+                df_htf = load_yfinance(YF_TICKER, YF_HTF_INTERVAL,
+                                       label="HTF (yfinance)")
+
+            df_htf = compute_supertrend(df_htf, HTF_ST_PERIOD, HTF_ST_MULTIPLIER)
+            df_htf.dropna(inplace=True)
+
+            htf_bull = df_htf["ST_bull"].reindex(df.index, method="ffill")
+            htf_val  = df_htf["ST_val"].reindex(df.index, method="ffill")
+            coverage = htf_bull.notna().mean()
+
+            if coverage < 0.5:
+                print(f"\n  ⚠  HTF index overlap only {coverage:.0%} — "
+                      f"HTF filter DISABLED (check date ranges match).")
+            else:
+                df["HTF_bull"] = htf_bull
+                df["HTF_val"]  = htf_val
+                df["HTF_bull"] = df["HTF_bull"].ffill()
+                df["HTF_val"]  = df["HTF_val"].ffill()
+                df.dropna(subset=["HTF_bull", "HTF_val"], inplace=True)
+                htf_enabled = True
+                exit_mode  = "HTF ST exit" if EXIT_USE_HTF_ST else "Base ST exit"
+                close_mode = "close-based" if CLOSE_BASED_EXIT else "intracandle"
+                print(f"\n  ✅  HTF ENABLED — ST({HTF_ST_PERIOD},{HTF_ST_MULTIPLIER}) | "
+                      f"Coverage: {coverage:.0%} | "
+                      f"Exit mode: {exit_mode} | {close_mode} | "
+                      f"Base candles: {len(df)}")
+
+        except FileNotFoundError as e:
+            print(e)
+            print("  ⚠  HTF filter DISABLED (file not found).")
+    else:
+        if src == "csv":
+            print("\n  ℹ  HTF_CSV = None  →  HTF filter DISABLED.")
+        else:
+            print("\n  ℹ  YF_HTF_INTERVAL = None  →  HTF filter DISABLED.")
+
+    if not htf_enabled:
+        df["HTF_bull"] = True
+        df["HTF_val"]  = df["ST_val"]
+
+    return df, htf_enabled
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+#  BACKTEST ENGINE
+# ───────────────────────────────────────────────────────────────────────────────
+def run_backtest(df, htf_enabled, vix_series=None):
+    trades = []
+
+    in_trade      = False
+    direction     = None
+    entry_price   = None
+    entry_time    = None
+    peak          = None
+    hard_sl_price = None
+    flip_candle   = -999
+
+    closes    = df["Close"].values.astype(float)
+    highs     = df["High"].values.astype(float)
+    lows      = df["Low"].values.astype(float)
+    st_vals   = df["ST_val"].values.astype(float)
+    htf_vals  = df["HTF_val"].values.astype(float)
+    st_bulls  = df["ST_bull"].values.astype(bool)
+    htf_bulls = df["HTF_bull"].values.astype(bool)
+    volumes   = df["Volume"].values.astype(float)
+    times     = df.index
+
+    exit_st = htf_vals if (EXIT_USE_HTF_ST and htf_enabled) else st_vals
+
+    vol_avg      = pd.Series(volumes).rolling(VOLUME_LOOKBACK).mean().values
+    daily_trades = {}
+
+    def in_window(t):
+        if not TRADE_WINDOW_ENABLED:
+            return True
+        return any(s <= t <= e for s, e in TRADE_WINDOWS)
+
+    def record(dir_, e_time, e_price, x_time, x_price, pk, sl_at_exit, reason, hard_sl):
+        pnl = round(((x_price - e_price) / e_price * 100) if dir_ == "long"
+                    else ((e_price - x_price) / e_price * 100), 4)
+        # ── Holding time ──────────────────────────────────────────────────
+        hold_mins = int((x_time - e_time).total_seconds() // 60)
+        hold_str  = f"{hold_mins // 60}H:{hold_mins % 60:02d}M"
+
+        row = {
+            "Date"            : e_time.strftime("%Y-%m-%d"),
+            "Direction"       : "Long  ↑" if dir_ == "long" else "Short ↓",
+            "Entry Time"      : fmt(e_time),
+            "Entry Price"     : round(e_price, 2),
+            "Hard SL Price"   : round(hard_sl, 2) if hard_sl is not None else "OFF",
+            "Exit ST Line"    : round(sl_at_exit, 2),
+            "Exit Time"       : fmt(x_time),
+            "Exit Price"      : round(x_price, 2),
+            "Peak"            : round(pk, 2),
+            "Holding Mins"    : hold_mins,          # numeric — used for averaging
+            "Holding Time"    : hold_str,            # display — HH:MM format
+            "Points Captured" : round(abs(x_price - e_price), 4),
+            "P&L %"           : pnl,
+            "Exit Reason"     : reason,
+            "Result"          : "WIN" if pnl > 0 else "LOSS",
+        }
+
+        # ── Option P&L (Greeks-based approximation) ───────────────────────
+        if OPTION_PNL_ENABLED:
+            ev = vix_series.asof(e_time) if vix_series is not None else None
+            xv = vix_series.asof(x_time) if vix_series is not None else None
+            opt = compute_option_pnl(dir_, e_price, x_price, hold_mins, ev, xv)
+            row.update(opt)
+
+        trades.append(row)
+
+    def open_trade(dir_, price, time_, high_, low_, date_key):
+        nonlocal in_trade, direction, entry_price, entry_time, peak, hard_sl_price
+        in_trade      = True
+        direction     = dir_
+        entry_price   = price
+        entry_time    = time_
+        peak          = high_ if dir_ == "long" else low_
+        hard_sl_price = (round(price * (1 - HARD_SL_PCT / 100), 4) if dir_ == "long"
+                         else round(price * (1 + HARD_SL_PCT / 100), 4)) \
+                        if HARD_SL_ENABLED else None
+        daily_trades[date_key] = daily_trades.get(date_key, 0) + 1
+
+    for i in range(1, len(df)):
+        c_close    = closes[i];     c_high  = highs[i];      c_low  = lows[i]
+        c_time     = times[i];      c_tod   = c_time.time(); c_st   = st_vals[i]
+        c_exit_st  = exit_st[i]
+        c_bull     = st_bulls[i];   prev_bull = st_bulls[i-1]
+        c_htf_bull = htf_bulls[i];  date_key  = c_time.date()
+
+        flipped_bull = (not prev_bull) and c_bull
+        flipped_bear = prev_bull and (not c_bull)
+        if flipped_bull or flipped_bear:
+            flip_candle = i
+
+        # EOD force exit
+        if in_trade and c_tod >= MARKET_CLOSE:
+            pk_f = max(peak, c_high) if direction == "long" else min(peak, c_low)
+            record(direction, entry_time, entry_price,
+                   c_time, c_close, pk_f, c_exit_st, "EOD Exit", hard_sl_price)
+            in_trade = False
+            continue
+
+        if c_tod < MARKET_OPEN or c_tod >= MARKET_CLOSE:
+            continue
+
+        # Manage open trade
+        if in_trade:
+            if direction == "long":
+                if c_high > peak: peak = c_high
+                hard_hit = HARD_SL_ENABLED and hard_sl_price and c_low <= hard_sl_price
+                if CLOSE_BASED_EXIT:
+                    st_hit = (c_close < c_exit_st) or flipped_bear
+                else:
+                    st_hit = c_low <= c_exit_st or flipped_bear
+
+                if hard_hit or st_hit:
+                    if hard_hit:
+                        reason = f"Hard SL ({HARD_SL_PCT}%)"; exit_px = hard_sl_price
+                    elif (CLOSE_BASED_EXIT and c_close < c_exit_st) or (not CLOSE_BASED_EXIT and c_low <= c_exit_st):
+                        exit_label = "HTF ST Exit" if (EXIT_USE_HTF_ST and htf_enabled) else "ST Stop Loss"
+                        reason = exit_label; exit_px = c_exit_st
+                    else:
+                        reason = "ST Flip Bear"; exit_px = c_exit_st
+                    record("long", entry_time, entry_price,
+                           c_time, round(exit_px, 2), peak, c_exit_st, reason, hard_sl_price)
+                    in_trade = False
+                    if (not hard_hit and not c_bull
+                            and (not htf_enabled or not c_htf_bull)
+                            and in_window(c_tod)
+                            and daily_trades.get(date_key, 0) < MAX_TRADES_PER_DAY):
+                        open_trade("short", c_close, c_time, c_high, c_low, date_key)
+
+            elif direction == "short":
+                if c_low < peak: peak = c_low
+                hard_hit = HARD_SL_ENABLED and hard_sl_price and c_high >= hard_sl_price
+                if CLOSE_BASED_EXIT:
+                    st_hit = (c_close > c_exit_st) or flipped_bull
+                else:
+                    st_hit = c_high >= c_exit_st or flipped_bull
+
+                if hard_hit or st_hit:
+                    if hard_hit:
+                        reason = f"Hard SL ({HARD_SL_PCT}%)"; exit_px = hard_sl_price
+                    elif (CLOSE_BASED_EXIT and c_close > c_exit_st) or (not CLOSE_BASED_EXIT and c_high >= c_exit_st):
+                        exit_label = "HTF ST Exit" if (EXIT_USE_HTF_ST and htf_enabled) else "ST Stop Loss"
+                        reason = exit_label; exit_px = c_exit_st
+                    else:
+                        reason = "ST Flip Bull"; exit_px = c_exit_st
+                    record("short", entry_time, entry_price,
+                           c_time, round(exit_px, 2), peak, c_exit_st, reason, hard_sl_price)
+                    in_trade = False
+                    if (not hard_hit and c_bull
+                            and (not htf_enabled or c_htf_bull)
+                            and in_window(c_tod)
+                            and daily_trades.get(date_key, 0) < MAX_TRADES_PER_DAY):
+                        open_trade("long", c_close, c_time, c_high, c_low, date_key)
+            continue
+
+        # Entry filters
+        if not in_window(c_tod):                                              continue
+        if (i - flip_candle) < CONFIRM_CANDLES:                              continue
+        if MIN_GAP_ENABLED and abs(c_close-c_st)/c_close*100 < MIN_GAP_PCT: continue
+        if (VOLUME_FILTER_ENABLED and not np.isnan(vol_avg[i])
+                and vol_avg[i] > 0
+                and volumes[i] < VOLUME_MULTIPLIER * vol_avg[i]):            continue
+        if (MAX_TRADES_PER_DAY_ENABLED
+                and daily_trades.get(date_key, 0) >= MAX_TRADES_PER_DAY):   continue
+
+        prev_close = closes[i - 1]
+
+        if c_bull and (not htf_enabled or c_htf_bull):
+            # Long: previous candle must be closing lower than current candle
+            # (price was dipping toward ST line but now turning back up)
+            if c_close > prev_close:
+                open_trade("long",  c_close, c_time, c_high, c_low, date_key)
+
+        elif not c_bull and (not htf_enabled or not c_htf_bull):
+            # Short: previous candle must be closing higher than current candle
+            # (price was rising toward ST line but now turning back down)
+            if c_close < prev_close:
+                open_trade("short", c_close, c_time, c_high, c_low, date_key)
+
+    return trades
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+#  SUMMARY BUILDERS
+# ───────────────────────────────────────────────────────────────────────────────
+def build_daily_summary(trades):
+    if not trades: return pd.DataFrame()
+    df_t = pd.DataFrame(trades); rows = []
+    has_opt = OPTION_PNL_ENABLED and "Option P&L \u20b9" in df_t.columns
+    for date, grp in df_t.groupby("Date"):
+        total = len(grp); wins = (grp["P&L %"] > 0).sum(); pnl = grp["P&L %"].sum()
+        wp = grp.loc[grp["P&L %"] > 0,  "Points Captured"].sum()
+        lp = grp.loc[grp["P&L %"] <= 0, "Points Captured"].sum()
+        row = {
+            "Date"           : date,
+            "Total Trades"   : total,
+            "Longs"          : grp["Direction"].str.contains("Long").sum(),
+            "Shorts"         : grp["Direction"].str.contains("Short").sum(),
+            "Winners"        : wins,
+            "Losers"         : total - wins,
+            "Win Rate %"     : round(wins / total * 100, 1),
+            "Total P&L %"    : round(pnl, 4),
+            "Best Trade %"   : round(grp["P&L %"].max(), 4),
+            "Worst Trade %"  : round(grp["P&L %"].min(), 4),
+            "Points Captured": round(wp, 2),
+            "Points Lost"    : round(lp, 2),
+            "Net Points"     : round(wp - lp, 2),
+            "Avg Hold Time"  : mins_to_hhmm(grp["Holding Mins"].mean()),
+            "Day Result"     : "\u2705 Profit" if pnl > 0 else "\u274c Loss" if pnl < 0 else "\u2696 Flat",
+        }
+        if has_opt:
+            opt_pnl  = grp["Option P&L \u20b9"].sum()
+            opt_wins = (grp["Option P&L \u20b9"] > 0).sum()
+            row["Option P&L \u20b9 Total"] = round(opt_pnl, 2)
+            row["Option P&L \u20b9 Avg"]   = round(grp["Option P&L \u20b9"].mean(), 2)
+            row["Option Best \u20b9"]       = round(grp["Option P&L \u20b9"].max(), 2)
+            row["Option Worst \u20b9"]      = round(grp["Option P&L \u20b9"].min(), 2)
+            row["Option Wins"]           = int(opt_wins)
+            row["Option Losses"]         = int(total - opt_wins)
+            row["Option Day Result"]     = ("\u2705 Profit" if opt_pnl > 0
+                                            else "\u274c Loss" if opt_pnl < 0 else "\u2696 Flat")
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def build_time_slot_summary(trades):
+    if not trades: return pd.DataFrame()
+    SLOTS = [
+        ("09:15","09:30"),("09:30","10:00"),("10:00","10:30"),("10:30","11:00"),
+        ("11:00","11:30"),("11:30","12:00"),("12:00","12:30"),("12:30","13:00"),
+        ("13:00","13:30"),("13:30","14:00"),("14:00","14:30"),("14:30","15:00"),
+        ("15:00","15:15"),
+    ]
+    df_t = pd.DataFrame(trades)
+    has_opt = OPTION_PNL_ENABLED and "Option P&L \u20b9" in df_t.columns
+    df_t["Entry_tod"] = (pd.to_datetime(df_t["Entry Time"], format="%Y-%m-%d %H:%M")
+                         .dt.strftime("%H:%M"))
+    rows = []
+    for s, e in SLOTS:
+        grp = df_t[(df_t["Entry_tod"] >= s) & (df_t["Entry_tod"] < e)]
+        if grp.empty:
+            empty = {"Time Slot": f"{s}\u2013{e}", "Trades": 0, "Winners": 0,
+                     "Losers": 0, "Win Rate %": "\u2014", "Total P&L %": 0.0,
+                     "Avg P&L %": 0.0, "Best %": 0.0, "Worst %": 0.0, "Verdict": "\u2014"}
+            if has_opt:
+                empty["Option P&L \u20b9 Total"] = 0.0
+                empty["Avg Option P&L \u20b9"]   = 0.0
+            rows.append(empty)
+            continue
+        total = len(grp); wins = (grp["P&L %"] > 0).sum()
+        pnl = grp["P&L %"].sum(); wr = wins / total * 100
+        row = {
+            "Time Slot"  : f"{s}\u2013{e}",
+            "Trades"     : total,
+            "Winners"    : wins,
+            "Losers"     : total - wins,
+            "Win Rate %": round(wr, 1),
+            "Total P&L %": round(pnl, 4),
+            "Avg P&L %"  : round(grp["P&L %"].mean(), 4),
+            "Best %"     : round(grp["P&L %"].max(), 4),
+            "Worst %"    : round(grp["P&L %"].min(), 4),
+            "Verdict"    : "\U0001f7e2 Trade" if pnl > 0 and wr >= 50 else "\U0001f534 Avoid",
+        }
+        if has_opt:
+            row["Option P&L \u20b9 Total"] = round(grp["Option P&L \u20b9"].sum(), 2)
+            row["Avg Option P&L \u20b9"]   = round(grp["Option P&L \u20b9"].mean(), 2)
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+#  HOLDING TIME SUMMARY  (unchanged)
+# ───────────────────────────────────────────────────────────────────────────────
+def build_holding_time_summary(trades):
+    if not trades:
+        return pd.DataFrame(), pd.DataFrame()
+
+    df_t = pd.DataFrame(trades)
+    if "Holding Mins" not in df_t.columns:
+        return pd.DataFrame(), pd.DataFrame()
+
+    overall_avg = mins_to_hhmm(df_t["Holding Mins"].mean())
+    overall_min = mins_to_hhmm(df_t["Holding Mins"].min())
+    overall_max = mins_to_hhmm(df_t["Holding Mins"].max())
+
+    wins_mask   = df_t["P&L %"] > 0
+    losses_mask = df_t["P&L %"] <= 0
+    longs_mask  = df_t["Direction"].str.contains("Long")
+    shorts_mask = df_t["Direction"].str.contains("Short")
+
+    wins_avg   = mins_to_hhmm(df_t.loc[wins_mask,   "Holding Mins"].mean()) if wins_mask.any()   else "—"
+    losses_avg = mins_to_hhmm(df_t.loc[losses_mask, "Holding Mins"].mean()) if losses_mask.any() else "—"
+    longs_avg  = mins_to_hhmm(df_t.loc[longs_mask,  "Holding Mins"].mean()) if longs_mask.any()  else "—"
+    shorts_avg = mins_to_hhmm(df_t.loc[shorts_mask, "Holding Mins"].mean()) if shorts_mask.any() else "—"
+
+    bins   = [0, 5, 15, 30, 60, 120, 9999]
+    labels = ["0–5 min", "6–15 min", "16–30 min", "31–60 min", "1–2 hrs", ">2 hrs"]
+    df_t["Hold_Bucket"] = pd.cut(df_t["Holding Mins"], bins=bins, labels=labels, right=True)
+    bucket_counts = df_t["Hold_Bucket"].value_counts().reindex(labels, fill_value=0)
+
+    summary_rows = [
+        ["OVERALL HOLDING TIME",   ""],
+        ["Avg Holding Time",        overall_avg],
+        ["Min Holding Time",        overall_min],
+        ["Max Holding Time",        overall_max],
+        ["",                        ""],
+        ["BY RESULT",               ""],
+        ["Avg Hold — Winners",      wins_avg],
+        ["Avg Hold — Losers",       losses_avg],
+        ["",                        ""],
+        ["BY DIRECTION",            ""],
+        ["Avg Hold — Longs",        longs_avg],
+        ["Avg Hold — Shorts",       shorts_avg],
+        ["",                        ""],
+        ["DURATION DISTRIBUTION",   ""],
+    ]
+    for lbl in labels:
+        cnt = int(bucket_counts[lbl])
+        pct = cnt / len(df_t) * 100
+        summary_rows.append([f"  {lbl}", f"{cnt} trades  ({pct:.1f}%)"])
+
+    df_summary = pd.DataFrame(summary_rows, columns=["Metric", "Value"])
+
+    SLOTS = [
+        ("09:15","09:30"),("09:30","10:00"),("10:00","10:30"),("10:30","11:00"),
+        ("11:00","11:30"),("11:30","12:00"),("12:00","12:30"),("12:30","13:00"),
+        ("13:00","13:30"),("13:30","14:00"),("14:00","14:30"),("14:30","15:00"),
+        ("15:00","15:15"),
+    ]
+    df_t["Entry_tod"] = (pd.to_datetime(df_t["Entry Time"], format="%Y-%m-%d %H:%M")
+                         .dt.strftime("%H:%M"))
+
+    slot_rows = []
+    for s, e in SLOTS:
+        grp = df_t[(df_t["Entry_tod"] >= s) & (df_t["Entry_tod"] < e)]
+        if grp.empty:
+            slot_rows.append({
+                "Time Slot"    : f"{s}–{e}",
+                "Trades"       : 0,
+                "Avg Holding"  : "—",
+                "Min Holding"  : "—",
+                "Max Holding"  : "—",
+                "Avg P&L %"    : "—",
+                "Win Avg Hold" : "—",
+                "Loss Avg Hold": "—",
+            })
+            continue
+        w = grp[grp["P&L %"] > 0];  l = grp[grp["P&L %"] <= 0]
+        slot_rows.append({
+            "Time Slot"    : f"{s}–{e}",
+            "Trades"       : len(grp),
+            "Avg Holding"  : mins_to_hhmm(grp["Holding Mins"].mean()),
+            "Min Holding"  : mins_to_hhmm(grp["Holding Mins"].min()),
+            "Max Holding"  : mins_to_hhmm(grp["Holding Mins"].max()),
+            "Avg P&L %"    : round(grp["P&L %"].mean(), 4),
+            "Win Avg Hold" : mins_to_hhmm(w["Holding Mins"].mean()) if not w.empty else "—",
+            "Loss Avg Hold": mins_to_hhmm(l["Holding Mins"].mean()) if not l.empty else "—",
+        })
+    df_slots = pd.DataFrame(slot_rows)
+
+    return df_summary, df_slots
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+#  ADVANCED STATS BUILDER  (unchanged)
+# ───────────────────────────────────────────────────────────────────────────────
+LOW_POINTS_THRESHOLD = 20
+
+def build_advanced_stats(trades, df_day):
+    if not trades:
+        return {}
+
+    df_t = pd.DataFrame(trades)
+
+    low_pt = df_t[(df_t["Points Captured"] < LOW_POINTS_THRESHOLD) & (df_t["P&L %"] > 0)].copy()
+    low_pt_total = len(low_pt)
+
+    if not low_pt.empty:
+        low_pt_daily = (low_pt.groupby("Date")
+                        .agg(
+                            Low_Pt_Trades   = ("Points Captured", "count"),
+                            Avg_Points      = ("Points Captured", lambda x: round(x.mean(), 2)),
+                            Total_PnL_Pct   = ("P&L %", "sum"),
+                            Winners         = ("Result", lambda x: (x == "WIN").sum()),
+                            Losers          = ("Result", lambda x: (x == "LOSS").sum()),
+                        )
+                        .reset_index()
+                        .rename(columns={
+                            "Low_Pt_Trades": f"Trades < {LOW_POINTS_THRESHOLD}pts",
+                            "Avg_Points"   : "Avg Points",
+                            "Total_PnL_Pct": "Total P&L %",
+                        }))
+        low_pt_daily["Total P&L %"] = low_pt_daily["Total P&L %"].round(4)
+    else:
+        low_pt_daily = pd.DataFrame(columns=["Date", f"Trades < {LOW_POINTS_THRESHOLD}pts",
+                                              "Avg Points","Total P&L %","Winners","Losers"])
+
+    results = (df_t["P&L %"] > 0).astype(int).tolist()
+    max_win_streak  = 0; cur_win  = 0
+    max_loss_streak = 0; cur_loss = 0
+    win_streak_end  = None; loss_streak_end = None
+
+    for idx, r in enumerate(results):
+        if r == 1:
+            cur_win += 1; cur_loss = 0
+            if cur_win > max_win_streak:
+                max_win_streak = cur_win
+                win_streak_end = df_t.iloc[idx]["Exit Time"]
+        else:
+            cur_loss += 1; cur_win = 0
+            if cur_loss > max_loss_streak:
+                max_loss_streak = cur_loss
+                loss_streak_end = df_t.iloc[idx]["Exit Time"]
+
+    total_longs  = df_t["Direction"].str.contains("Long").sum()
+    total_shorts = df_t["Direction"].str.contains("Short").sum()
+    long_wins    = df_t[(df_t["Direction"].str.contains("Long"))  & (df_t["P&L %"] > 0)].shape[0]
+    short_wins   = df_t[(df_t["Direction"].str.contains("Short")) & (df_t["P&L %"] > 0)].shape[0]
+
+    if df_day is not None and not df_day.empty:
+        profit_days_pts = df_day.loc[df_day["Net Points"] > 0, "Net Points"]
+        loss_days_pts   = df_day.loc[df_day["Net Points"] < 0, "Net Points"]
+        avg_profit_per_day     = round(profit_days_pts.mean(), 2) if not profit_days_pts.empty else 0.0
+        avg_loss_per_day       = round(loss_days_pts.mean(),   2) if not loss_days_pts.empty   else 0.0
+        highest_profit_day_pts = round(df_day["Net Points"].max(), 2)
+        highest_loss_day_pts   = round(df_day["Net Points"].min(), 2)
+        highest_profit_day     = df_day.loc[df_day["Net Points"].idxmax(), "Date"]
+        highest_loss_day       = df_day.loc[df_day["Net Points"].idxmin(), "Date"]
+    else:
+        avg_profit_per_day = avg_loss_per_day = 0.0
+        highest_profit_day_pts = highest_loss_day_pts = 0.0
+        highest_profit_day = highest_loss_day = "—"
+
+    return {
+        "low_pt_trades"         : low_pt,
+        "low_pt_total"          : low_pt_total,
+        "low_pt_daily"          : low_pt_daily,
+        "max_win_streak"        : max_win_streak,
+        "max_loss_streak"       : max_loss_streak,
+        "win_streak_end"        : win_streak_end,
+        "loss_streak_end"       : loss_streak_end,
+        "total_longs"           : total_longs,
+        "total_shorts"          : total_shorts,
+        "long_wins"             : long_wins,
+        "short_wins"            : short_wins,
+        "avg_profit_per_day"    : avg_profit_per_day,
+        "avg_loss_per_day"      : avg_loss_per_day,
+        "highest_profit_day_pts": highest_profit_day_pts,
+        "highest_loss_day_pts"  : highest_loss_day_pts,
+        "highest_profit_day"    : highest_profit_day,
+        "highest_loss_day"      : highest_loss_day,
+    }
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+#  PRINT RESULTS  (unchanged)
+# ───────────────────────────────────────────────────────────────────────────────
+def print_results(trades, htf_enabled):
+    SEP  = "═" * 120
+    DASH = "─" * 120
+    htf_info     = (f"ST({HTF_ST_PERIOD},{HTF_ST_MULTIPLIER}) from '{HTF_CSV}'"
+                    if htf_enabled else "OFF (HTF_CSV = None or file not found)")
+    exit_st_info = (f"HTF ST({HTF_ST_PERIOD},{HTF_ST_MULTIPLIER})"
+                    if (EXIT_USE_HTF_ST and htf_enabled) else f"Base ST({ST_PERIOD},{ST_MULTIPLIER})")
+    close_info   = "Close-based (no wick exits)" if CLOSE_BASED_EXIT else "Intracandle (Low/High)"
+
+    print("\n" + SEP)
+    print(f"  {SYMBOL}  |  Entry ST({ST_PERIOD},{ST_MULTIPLIER})  |  EOD: {MARKET_CLOSE}")
+    print(f"  Base CSV  : {BASE_CSV}")
+    print(f"  HTF       : {htf_info}")
+    print(f"  Exit ST   : {exit_st_info}")
+    print(f"  Exit Mode : {close_info}")
+    print(f"  Filters   : Window={'ON' if TRADE_WINDOW_ENABLED else 'OFF'}  "
+          f"| ConfirmN={CONFIRM_CANDLES}  "
+          f"| MinGap={'ON('+str(MIN_GAP_PCT)+'%)' if MIN_GAP_ENABLED else 'OFF'}  "
+          f"| Volume={'ON' if VOLUME_FILTER_ENABLED else 'OFF'}  "
+          f"| MaxTrades/Day={MAX_TRADES_PER_DAY if MAX_TRADES_PER_DAY_ENABLED else 'OFF'}")
+    print(f"  Hard SL   : {'ON — '+str(HARD_SL_PCT)+'% from entry (always intracandle)' if HARD_SL_ENABLED else 'OFF'}")
+    print(SEP)
+
+    if not trades:
+        print("  ⚠  No trades found. Try relaxing filters or checking CSV date range.")
+        print(SEP)
+        return None, None, None, None, pd.DataFrame(), pd.DataFrame()
+
+    df_t   = pd.DataFrame(trades)
+    df_day = build_daily_summary(trades)
+    df_ts  = build_time_slot_summary(trades)
+    adv    = build_advanced_stats(trades, df_day)
+    df_hold_sum, df_hold_slots = build_holding_time_summary(trades)
+
+    total    = len(df_t)
+    wins     = (df_t["P&L %"] > 0).sum()
+    losses   = total - wins
+    win_pts  = df_t.loc[df_t["P&L %"] > 0,  "Points Captured"].sum()
+    loss_pts = df_t.loc[df_t["P&L %"] <= 0, "Points Captured"].sum()
+    p_days   = (df_day["Total P&L %"] > 0).sum()
+    l_days   = (df_day["Total P&L %"] < 0).sum()
+    best_d   = df_day.loc[df_day["Total P&L %"].idxmax()]
+    wrst_d   = df_day.loc[df_day["Total P&L %"].idxmin()]
+    best_s   = df_ts.loc[df_ts["Total P&L %"].idxmax()] if not df_ts.empty else None
+    wrst_s   = df_ts.loc[df_ts["Total P&L %"].idxmin()] if not df_ts.empty else None
+
+    # ── Trade Log ─────────────────────────────────────────────────────────
+    print("\n  TRADE LOG"); print(DASH)
+    cols = ["Date","Direction","Entry Time","Entry Price","Hard SL Price",
+            "Exit ST Line","Exit Time","Exit Price","Holding Time",
+            "Points Captured","P&L %","Exit Reason","Result"]
+    # Append option columns if available
+    if OPTION_PNL_ENABLED and "Option P&L \u20b9" in df_t.columns:
+        cols += ["Option \u0394S","Delta Effect","Gamma Effect","Theta Effect",
+                 "Vega Effect","Option Change","Option P&L \u20b9","Option Result"]
+    print(df_t[cols].to_string(index=False))
+
+    # ── Low-point trades ──────────────────────────────────────────────────
+    print("\n\n" + SEP)
+    print(f"  LOW-POINT TRADES  (Winning trades with Points Captured < {LOW_POINTS_THRESHOLD})")
+    print(DASH)
+    if adv["low_pt_total"] > 0:
+        lp_cols = ["Date","Direction","Entry Time","Entry Price","Exit Time",
+                   "Exit Price","Holding Time","Points Captured","P&L %","Exit Reason","Result"]
+        print(adv["low_pt_trades"][lp_cols].to_string(index=False))
+        print(f"\n  Total: {adv['low_pt_total']} of {total} ({adv['low_pt_total']/total*100:.1f}%)")
+        print(f"\n  Per-day breakdown:")
+        print(adv["low_pt_daily"].to_string(index=False))
+    else:
+        print(f"  \u2705  No winning trades with Points Captured < {LOW_POINTS_THRESHOLD}")
+
+    # ── Per-day P&L ───────────────────────────────────────────────────────
+    print("\n\n" + SEP); print("  PER-DAY P&L BREAKDOWN"); print(DASH)
+    print(df_day.to_string(index=False))
+
+    # ── Time-slot P&L ─────────────────────────────────────────────────────
+    print("\n\n" + SEP)
+    print("  TIME-SLOT P&L ANALYSIS  (entry time grouped into 30-min windows)")
+    print(DASH); print(df_ts.to_string(index=False))
+
+    # ── Holding Time Report ───────────────────────────────────────────────
+    print("\n\n" + SEP)
+    print("  HOLDING TIME ANALYSIS")
+    print(DASH)
+    if not df_hold_sum.empty:
+        print(df_hold_sum.to_string(index=False))
+        print()
+        print("  Avg Holding Time by Entry Time Slot:")
+        print(DASH)
+        print(df_hold_slots.to_string(index=False))
+
+    # ── Option P&L Analysis ───────────────────────────────────────────────
+    if OPTION_PNL_ENABLED and "Option P&L \u20b9" in df_t.columns:
+        print("\n\n" + SEP)
+        print("  OPTION P&L ANALYSIS  (Delta + Gamma + Theta + Vega approximation)")
+        print(DASH)
+        vega_on = VEGA != 0
+        print(f"  Greeks Used   : \u0394={DELTA}  \u0393={GAMMA}  \u0398/day={THETA_DAILY}\u20b9"
+              f"  Vega={VEGA}{'  [VIX-linked]' if vega_on else '  [disabled]'}")
+        print(f"  Lot Size      : {LOT_SIZE}")
+        print(f"  Trading Hrs   : {TRADING_HOURS_DAY}h/day  |  \u0398/hr = {THETA_DAILY/TRADING_HOURS_DAY:.4f}\u20b9")
+        print(DASH)
+        opt_wins   = (df_t["Option P&L \u20b9"] > 0).sum()
+        opt_losses = total - opt_wins
+        opt_total  = df_t["Option P&L \u20b9"].sum()
+        opt_avg    = df_t["Option P&L \u20b9"].mean()
+        opt_best   = df_t["Option P&L \u20b9"].max()
+        opt_worst  = df_t["Option P&L \u20b9"].min()
+        opt_won    = df_t.loc[df_t["Option P&L ₹"] > 0,  "Option P&L ₹"].sum()
+        opt_lost   = df_t.loc[df_t["Option P&L ₹"] <= 0, "Option P&L ₹"].sum()
+        print(f"  {'OPTION TRADE STATS':─<55}")
+        print(f"  Option Winners        : {opt_wins}  ({opt_wins/total*100:.1f}%)")
+        print(f"  Option Losers         : {opt_losses}  ({opt_losses/total*100:.1f}%)")
+        print(DASH)
+        print(f"  {'OPTION P&L (\u20b9)':─<55}")
+        print(f"  Total Option P&L      : \u20b9{opt_total:,.2f}")
+        print(f"  Avg Option P&L/Trade  : \u20b9{opt_avg:,.2f}")
+        print(f"  Best Option Trade     : \u20b9{opt_best:,.2f}")
+        print(f"  Worst Option Trade    : \u20b9{opt_worst:,.2f}")
+        print(f"  Option Points Won     : ₹{opt_won:,.2f}  (winning trades only)")
+        print(f"  Option Points Lost    : ₹{opt_lost:,.2f}  (losing trades only)")
+        print(f"  Net Option P&L        : ₹{opt_won + opt_lost:,.2f}")
+        print(DASH)
+        print(f"  {'GREEK COMPONENTS (avg per trade)':─<55}")
+        print(f"  Avg Delta Effect      : \u20b9{df_t['Delta Effect'].mean():,.4f}")
+        print(f"  Avg Gamma Effect      : \u20b9{df_t['Gamma Effect'].mean():,.4f}")
+        print(f"  Avg Theta Effect      : \u20b9{df_t['Theta Effect'].mean():,.4f}")
+        if vega_on:
+            print(f"  Avg Vega  Effect      : \u20b9{df_t['Vega Effect'].mean():,.4f}")
+        print(DASH)
+        # Breakeven info
+        be_up_avg = df_t["Breakeven \u0394S\u2191"].dropna().mean()
+        be_dn_avg = df_t["Breakeven \u0394S\u2193"].dropna().mean()
+        print(f"  {'BREAKEVEN (avg across trades)':─<55}")
+        if not pd.isna(be_up_avg):
+            print(f"  Avg Breakeven (\u2191move) : +{be_up_avg:.2f} pts from entry")
+        if not pd.isna(be_dn_avg):
+            print(f"  Avg Breakeven (\u2193move) : {be_dn_avg:.2f} pts from entry")
+        print(DASH)
+        # Per-day option P&L
+        if "Option P&L \u20b9 Total" in df_day.columns:
+            print(f"  {'DAILY OPTION P&L':─<55}")
+            day_opt = df_day[["Date","Option P&L \u20b9 Total","Option P&L \u20b9 Avg",
+                               "Option Wins","Option Losses","Option Day Result"]]
+            print(day_opt.to_string(index=False))
+            print(DASH)
+
+    # ── Overall Summary ───────────────────────────────────────────────────
+    print("\n\n" + SEP); print("  OVERALL SUMMARY"); print(DASH)
+    print(f"  {'EXIT CONFIGURATION':─<55}")
+    print(f"  Exit ST Line        : {exit_st_info}")
+    print(f"  Exit Trigger        : {close_info}")
+    print(f"  Hard SL             : {'ON ('+str(HARD_SL_PCT)+'%) — always intracandle' if HARD_SL_ENABLED else 'OFF'}")
+    print(DASH)
+    print(f"  {'TRADE STATS':─<55}")
+    print(f"  Total Trades        : {total}")
+    print(f"  Winners             : {wins}  ({wins/total*100:.1f}%)")
+    print(f"  Losers              : {losses}  ({losses/total*100:.1f}%)")
+    htf_exit_count = df_t["Exit Reason"].str.contains("HTF ST Exit").sum()
+    print(f"  Hard SL Exits       : {df_t['Exit Reason'].str.startswith('Hard SL').sum()}")
+    print(f"  HTF ST Exits        : {htf_exit_count}")
+    print(f"  Base ST SL Exits    : {(df_t['Exit Reason'] == 'ST Stop Loss').sum()}")
+    print(f"  ST Flip Exits       : {df_t['Exit Reason'].str.startswith('ST Flip').sum()}")
+    print(f"  EOD Force Exits     : {(df_t['Exit Reason'] == 'EOD Exit').sum()}")
+    print(DASH)
+    print(f"  {'P&L STATS':─<55}")
+    print(f"  Total P&L           : {df_t['P&L %'].sum():.4f}%")
+    print(f"  Avg P&L / Trade     : {df_t['P&L %'].mean():.4f}%")
+    print(f"  Best Single Trade   : {df_t['P&L %'].max():.4f}%")
+    print(f"  Worst Single Trade  : {df_t['P&L %'].min():.4f}%")
+    if OPTION_PNL_ENABLED and "Option P&L \u20b9" in df_t.columns:
+        print(DASH)
+        print(f"  {'OPTION P&L SUMMARY':─<55}")
+        print(f"  Total Option P&L    : \u20b9{df_t['Option P&L \u20b9'].sum():,.2f}  (Lot={LOT_SIZE})")
+        print(f"  Avg Option / Trade  : \u20b9{df_t['Option P&L \u20b9'].mean():,.2f}")
+        print(f"  Best Option Trade   : \u20b9{df_t['Option P&L \u20b9'].max():,.2f}")
+        print(f"  Worst Option Trade  : \u20b9{df_t['Option P&L \u20b9'].min():,.2f}")
+        print(f"  Option Winners      : {(df_t['Option P&L \u20b9'] > 0).sum()}  |  Losers: {(df_t['Option P&L \u20b9'] <= 0).sum()}")
+    print(DASH)
+    print(f"  {'POINTS':─<55}")
+    print(f"  Points Captured     : {win_pts:.2f}  (winning trades)")
+    print(f"  Points Lost         : {loss_pts:.2f}  (losing trades)")
+    print(f"  Net Points          : {win_pts - loss_pts:.2f}")
+    print(DASH)
+    print(f"  {'HOLDING TIME':─<55}")
+    if not df_hold_sum.empty:
+        hs = df_hold_sum.set_index("Metric")["Value"].to_dict()
+        print(f"  Avg Holding Time    : {hs.get('Avg Holding Time','—')}")
+        print(f"  Avg Hold — Winners  : {hs.get('Avg Hold — Winners','—')}")
+        print(f"  Avg Hold — Losers   : {hs.get('Avg Hold — Losers','—')}")
+        print(f"  Avg Hold — Longs    : {hs.get('Avg Hold — Longs','—')}")
+        print(f"  Avg Hold — Shorts   : {hs.get('Avg Hold — Shorts','—')}")
+    print(DASH)
+    print(f"  {'DAY STATS':─<55}")
+    print(f"  Total Days          : {len(df_day)}")
+    print(f"  Profit Days         : {p_days}  ({p_days/len(df_day)*100:.1f}%)")
+    print(f"  Loss Days           : {l_days}  ({l_days/len(df_day)*100:.1f}%)")
+    print(f"  Flat Days           : {len(df_day) - p_days - l_days}")
+    print(f"  Best Day            : {best_d['Date']}  \u2192  {best_d['Total P&L %']:.4f}%  |  Net Pts: {best_d['Net Points']:.2f}")
+    print(f"  Worst Day           : {wrst_d['Date']}  \u2192  {wrst_d['Total P&L %']:.4f}%  |  Net Pts: {wrst_d['Net Points']:.2f}")
+    if best_s is not None:
+        print(DASH)
+        print(f"  {'TIME SLOT INSIGHTS':─<55}")
+        print(f"  Best Slot           : {best_s['Time Slot']}  \u2192  {best_s['Total P&L %']:.4f}%  |  WR: {best_s['Win Rate %']}%")
+        print(f"  Worst Slot          : {wrst_s['Time Slot']}  \u2192  {wrst_s['Total P&L %']:.4f}%  |  WR: {wrst_s['Win Rate %']}%")
+    print(DASH)
+    print(f"  {'DIRECTION BREAKDOWN':─<55}")
+    if adv['total_longs']  > 0: print(f"  Total Longs         : {adv['total_longs']}  |  Won: {adv['long_wins']}  ({adv['long_wins']/adv['total_longs']*100:.1f}%)")
+    if adv['total_shorts'] > 0: print(f"  Total Shorts        : {adv['total_shorts']}  |  Won: {adv['short_wins']}  ({adv['short_wins']/adv['total_shorts']*100:.1f}%)")
+    print(DASH)
+    print(f"  {'STREAK ANALYSIS':─<55}")
+    print(f"  Max Win  Streak     : {adv['max_win_streak']}  consecutive wins   (ended at: {adv['win_streak_end'] or '—'})")
+    print(f"  Max Loss Streak     : {adv['max_loss_streak']}  consecutive losses (ended at: {adv['loss_streak_end'] or '—'})")
+    print(DASH)
+    print(f"  {'LOW-POINT TRADE SUMMARY':─<55}")
+    print(f"  Trades < {LOW_POINTS_THRESHOLD} pts       : {adv['low_pt_total']} of {total}  ({adv['low_pt_total']/total*100:.1f}%)")
+    print(DASH)
+    print(f"  {'DAILY POINT AVERAGES':─<55}")
+    print(f"  Avg Profit / Day    : +{adv['avg_profit_per_day']:.2f} pts  (profit days only)")
+    print(f"  Avg Loss   / Day    : {adv['avg_loss_per_day']:.2f} pts  (loss days only)")
+    print(f"  Highest Profit Day  : {adv['highest_profit_day']}  \u2192  +{adv['highest_profit_day_pts']:.2f} pts")
+    print(f"  Highest Loss Day    : {adv['highest_loss_day']}  \u2192  {adv['highest_loss_day_pts']:.2f} pts")
+    print(SEP + "\n")
+
+    return df_t, df_day, df_ts, adv, df_hold_sum, df_hold_slots
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+#  EXCEL EXPORT  (unchanged)
+# ───────────────────────────────────────────────────────────────────────────────
+def export_excel(df, df_trades, df_day, df_ts, htf_enabled, adv,
+                 df_hold_sum=None, df_hold_slots=None):
+    fname = f"{SYMBOL}_supertrend_v3.xlsx"
+
+    df_st = df[["Open","High","Low","Close","Volume","ST_val","ST_direction"]].copy()
+    df_st.index = df_st.index.strftime("%Y-%m-%d %H:%M")
+    df_st.index.name = "DateTime (IST)"
+    df_st.columns = ["Open","High","Low","Close","Volume",
+                     f"ST({ST_PERIOD},{ST_MULTIPLIER})","Direction"]
+    df_st = df_st.round(2)
+
+    if df_trades is not None and not df_trades.empty:
+        total    = len(df_trades); wins = (df_trades["P&L %"] > 0).sum()
+        win_pts  = df_trades.loc[df_trades["P&L %"] > 0,  "Points Captured"].sum()
+        loss_pts = df_trades.loc[df_trades["P&L %"] <= 0, "Points Captured"].sum()
+        pd_      = int((df_day["Total P&L %"] > 0).sum()) if df_day is not None else 0
+        ld_      = int((df_day["Total P&L %"] < 0).sum()) if df_day is not None else 0
+
+        # Avg holding for summary sheet
+        avg_hold_overall = "—"
+        avg_hold_wins    = "—"
+        avg_hold_losses  = "—"
+        if "Holding Mins" in df_trades.columns:
+            avg_hold_overall = mins_to_hhmm(df_trades["Holding Mins"].mean())
+            w = df_trades[df_trades["P&L %"] > 0]
+            l = df_trades[df_trades["P&L %"] <= 0]
+            if not w.empty: avg_hold_wins   = mins_to_hhmm(w["Holding Mins"].mean())
+            if not l.empty: avg_hold_losses = mins_to_hhmm(l["Holding Mins"].mean())
+
+        summary_rows = [
+            ["STRATEGY INFO",  ""],
+            ["Symbol",         SYMBOL],
+            ["Base CSV",       BASE_CSV],
+            ["HTF CSV",        HTF_CSV or "—  (HTF filter OFF)"],
+            ["Base ST",        f"Period={ST_PERIOD}, Mult={ST_MULTIPLIER}"],
+            ["HTF ST",         f"Period={HTF_ST_PERIOD}, Mult={HTF_ST_MULTIPLIER}"],
+            ["HTF Active",     "YES" if htf_enabled else "NO"],
+            ["EOD Exit",       str(MARKET_CLOSE)],
+            ["", ""],
+            ["EXIT CONFIG",    ""],
+            ["Exit ST Line",   f"HTF ST({HTF_ST_PERIOD},{HTF_ST_MULTIPLIER})" if (EXIT_USE_HTF_ST and htf_enabled) else f"Base ST({ST_PERIOD},{ST_MULTIPLIER})"],
+            ["Exit Trigger",   "Close-based" if CLOSE_BASED_EXIT else "Intracandle"],
+            ["Hard SL",        f"{'ON ('+str(HARD_SL_PCT)+'%)' if HARD_SL_ENABLED else 'OFF'}"],
+            ["", ""],
+            ["FILTERS",        ""],
+            ["HTF Filter",     "ON" if htf_enabled else "OFF"],
+            ["Trade Window",   "ON" if TRADE_WINDOW_ENABLED else "OFF"],
+            ["Confirm Candles",CONFIRM_CANDLES],
+            ["Min Gap",        f"{'ON ('+str(MIN_GAP_PCT)+'%)' if MIN_GAP_ENABLED else 'OFF'}"],
+            ["Volume Filter",  f"{'ON ('+str(VOLUME_MULTIPLIER)+'x)' if VOLUME_FILTER_ENABLED else 'OFF'}"],
+            ["Max Trades/Day", MAX_TRADES_PER_DAY if MAX_TRADES_PER_DAY_ENABLED else "OFF"],
+            ["", ""],
+            ["TRADE STATS",    ""],
+            ["Total Trades",   total],
+            ["Winners",        f"{wins} ({wins/total*100:.1f}%)"],
+            ["Losers",         f"{total-wins} ({(total-wins)/total*100:.1f}%)"],
+            ["Hard SL Exits",  int(df_trades["Exit Reason"].str.startswith("Hard SL").sum())],
+            ["HTF ST Exits",   int(df_trades["Exit Reason"].str.contains("HTF ST Exit").sum())],
+            ["Base ST Exits",  int((df_trades["Exit Reason"]=="ST Stop Loss").sum())],
+            ["ST Flip Exits",  int(df_trades["Exit Reason"].str.startswith("ST Flip").sum())],
+            ["EOD Exits",      int((df_trades["Exit Reason"]=="EOD Exit").sum())],
+            ["", ""],
+            ["P&L STATS",      ""],
+            ["Total P&L %",    round(df_trades["P&L %"].sum(), 4)],
+            ["Avg P&L %",      round(df_trades["P&L %"].mean(), 4)],
+            ["Best Trade %",   round(df_trades["P&L %"].max(), 4)],
+            ["Worst Trade %",  round(df_trades["P&L %"].min(), 4)],
+            ["", ""],
+            ["HOLDING TIME",   ""],
+            ["Avg Hold Overall",  avg_hold_overall],
+            ["Avg Hold Winners",  avg_hold_wins],
+            ["Avg Hold Losers",   avg_hold_losses],
+            ["", ""],
+            ["POINTS",         ""],
+            ["Points Captured",round(win_pts, 2)],
+            ["Points Lost",    round(loss_pts, 2)],
+            ["Net Points",     round(win_pts - loss_pts, 2)],
+            ["", ""],
+            ["DAY STATS",      ""],
+            ["Total Days",     len(df_day) if df_day is not None else 0],
+            ["Profit Days",    pd_],
+            ["Loss Days",      ld_],
+        ]
+        if df_day is not None and not df_day.empty:
+            bd = df_day.loc[df_day["Total P&L %"].idxmax()]
+            wd = df_day.loc[df_day["Total P&L %"].idxmin()]
+            summary_rows += [
+                ["Best Day",  f"{bd['Date']}  \u2192  {bd['Total P&L %']:.4f}%"],
+                ["Worst Day", f"{wd['Date']}  \u2192  {wd['Total P&L %']:.4f}%"],
+            ]
+
+        # ── Option P&L rows for summary sheet ──────────────────────────────
+        if OPTION_PNL_ENABLED and df_trades is not None and "Option P&L \u20b9" in df_trades.columns:
+            opt_wins = int((df_trades["Option P&L \u20b9"] > 0).sum())
+            summary_rows += [
+                ["", ""],
+                ["OPTION P&L (Greeks-based)", ""],
+                ["Feature",            "ENABLED"],
+                ["Lot Size",           LOT_SIZE],
+                ["Delta (\u0394)",          DELTA],
+                ["Gamma (\u0393)",          GAMMA],
+                ["Theta/day (\u0398)",      f"{THETA_DAILY} \u20b9"],
+                ["Vega",               f"{VEGA} ({'VIX-linked' if VEGA != 0 else 'disabled'})"],
+                ["Trading Hrs/Day",    TRADING_HOURS_DAY],
+                ["Theta/hr",           f"{THETA_DAILY/TRADING_HOURS_DAY:.4f} \u20b9"],
+                ["", ""],
+                ["Total Option P&L",   f"\u20b9{df_trades['Option P&L \u20b9'].sum():,.2f}"],
+                ["Avg Option/Trade",   f"\u20b9{df_trades['Option P&L \u20b9'].mean():,.2f}"],
+                ["Best Option Trade",  f"\u20b9{df_trades['Option P&L \u20b9'].max():,.2f}"],
+                ["Worst Option Trade", f"\u20b9{df_trades['Option P&L \u20b9'].min():,.2f}"],
+                ["Option Winners",     f"{opt_wins} ({opt_wins/len(df_trades)*100:.1f}%)"],
+                ["Option Losers",      f"{len(df_trades)-opt_wins} ({(len(df_trades)-opt_wins)/len(df_trades)*100:.1f}%)"],
+            ]
+
+        df_summary = pd.DataFrame(summary_rows, columns=["Metric","Value"])
+    else:
+        df_summary = pd.DataFrame([{"Metric":"No trades found","Value":""}])
+
+    # Export trade log — drop numeric Holding Mins column (keep display column only)
+    df_trades_export = df_trades.drop(columns=["Holding Mins"], errors="ignore") \
+                       if df_trades is not None else None
+
+    with pd.ExcelWriter(fname, engine="openpyxl") as writer:
+        df_st.to_excel(writer, sheet_name="Supertrend Data", index=True)
+        if df_trades_export is not None and not df_trades_export.empty:
+            df_trades_export.to_excel(writer, sheet_name="Trade Log", index=False)
+        if df_day is not None and not df_day.empty:
+            df_day.to_excel(writer, sheet_name="Daily P&L", index=False)
+        if df_ts is not None and not df_ts.empty:
+            df_ts.to_excel(writer, sheet_name="Time Slot P&L", index=False)
+        # ── Holding time sheets ────────────────────────────────────────────
+        if df_hold_sum is not None and not df_hold_sum.empty:
+            df_hold_sum.to_excel(writer, sheet_name="Holding Time Summary", index=False)
+        if df_hold_slots is not None and not df_hold_slots.empty:
+            df_hold_slots.to_excel(writer, sheet_name="Holding By Time Slot", index=False)
+
+        # ── Option P&L Summary sheet ───────────────────────────────────────
+        if (OPTION_PNL_ENABLED and df_trades_export is not None
+                and "Option P&L \u20b9" in df_trades_export.columns):
+            opt_cols = ["Date","Direction","Entry Time","Entry Price","Exit Time",
+                        "Exit Price","Holding Time","Option \u0394S","Delta Effect",
+                        "Gamma Effect","Theta Effect","Vega Effect","\u0394\u03c3 (VIX chg)",
+                        "Option Change","Option P&L \u20b9","New Delta",
+                        "Breakeven \u0394S\u2191","Breakeven \u0394S\u2193","Option Result"]
+            existing_opt = [c for c in opt_cols if c in df_trades_export.columns]
+            df_trades_export[existing_opt].to_excel(
+                writer, sheet_name="Option P&L Summary", index=False)
+
+        df_summary.to_excel(writer, sheet_name="Summary", index=False)
+
+        if adv:
+            total_t = len(df_trades) if df_trades is not None else 1
+            adv_rows = [
+                ["DIRECTION BREAKDOWN", ""],
+                ["Total Longs",         adv["total_longs"]],
+                ["Long Wins",           f"{adv['long_wins']} ({adv['long_wins']/max(adv['total_longs'],1)*100:.1f}%)"],
+                ["Total Shorts",        adv["total_shorts"]],
+                ["Short Wins",          f"{adv['short_wins']} ({adv['short_wins']/max(adv['total_shorts'],1)*100:.1f}%)"],
+                ["", ""],
+                ["STREAK ANALYSIS", ""],
+                ["Max Win Streak",      adv["max_win_streak"]],
+                ["Win Streak Ended At", adv["win_streak_end"] or "—"],
+                ["Max Loss Streak",     adv["max_loss_streak"]],
+                ["Loss Streak Ended At",adv["loss_streak_end"] or "—"],
+                ["", ""],
+                ["LOW-POINT TRADES", ""],
+                ["Threshold (pts)",     LOW_POINTS_THRESHOLD],
+                [f"Trades < {LOW_POINTS_THRESHOLD} pts", adv["low_pt_total"]],
+                ["% of Total Trades",  f"{adv['low_pt_total']/total_t*100:.1f}%"],
+                ["", ""],
+                ["DAILY POINT AVERAGES", ""],
+                ["Avg Profit / Day (pts)", adv["avg_profit_per_day"]],
+                ["Avg Loss   / Day (pts)", adv["avg_loss_per_day"]],
+                ["Highest Profit Day",  f"{adv['highest_profit_day']}  →  +{adv['highest_profit_day_pts']:.2f} pts"],
+                ["Highest Loss Day",    f"{adv['highest_loss_day']}  →  {adv['highest_loss_day_pts']:.2f} pts"],
+            ]
+            pd.DataFrame(adv_rows, columns=["Metric","Value"]).to_excel(
+                writer, sheet_name="Advanced Stats", index=False)
+
+            if not adv["low_pt_trades"].empty:
+                lp_cols = ["Date","Direction","Entry Time","Entry Price","Exit Time",
+                           "Exit Price","Holding Time","Points Captured",
+                           "P&L %","Exit Reason","Result"]
+                existing = [c for c in lp_cols if c in adv["low_pt_trades"].columns]
+                adv["low_pt_trades"][existing].to_excel(
+                    writer, sheet_name="Low-Point Trades", index=False)
+
+            if not adv["low_pt_daily"].empty:
+                adv["low_pt_daily"].to_excel(writer, sheet_name="Low-Pt Per Day", index=False)
+
+    _style_excel(fname, df_trades_export, df_day, df_ts, df_hold_sum, df_hold_slots)
+    print(f"  Excel saved  → {fname}")
+    return fname
+
+
+def _style_excel(fname, df_trades, df_day, df_ts, df_hold_sum=None, df_hold_slots=None):
+    GL="C6EFCE"; GD="1A5C38"; RL="FFC7CE"; RD="9C0006"
+    BH="1F3864"; YS="FFD700"; GA="F2F2F2"; WH="FFFFFF"
+    OR="FCE4D6"; TL="DDEBF7"; PU="EAD1DC"
+    ts  = Side(style="thin", color="CCCCCC")
+    bdr = Border(left=ts, right=ts, top=ts, bottom=ts)
+
+    def hdr(ws, row=1, bg=BH, fg=WH):
+        for c in ws[row]:
+            c.fill = PatternFill("solid", fgColor=bg)
+            c.font = Font(bold=True, color=fg, size=10)
+            c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            c.border = bdr
+        ws.row_dimensions[row].height = 22
+
+    def aw(ws, cap=30):
+        for col in ws.columns:
+            w = max((len(str(c.value or "")) for c in col), default=8)
+            ws.column_dimensions[get_column_letter(col[0].column)].width = min(w+3, cap)
+
+    wb = load_workbook(fname)
+
+    # ST Data
+    if "Supertrend Data" in wb.sheetnames:
+        ws = wb["Supertrend Data"]; hdr(ws); ws.freeze_panes = "B2"
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+            v = str(row[-1].value or "")
+            bg = GL if v=="Bullish" else RL if v=="Bearish" else WH
+            fc = GD if v=="Bullish" else RD if v=="Bearish" else "000000"
+            for cell in row:
+                cell.fill=PatternFill("solid",fgColor=bg); cell.border=bdr
+                cell.alignment=Alignment(horizontal="center")
+            row[-1].font=Font(bold=True, color=fc)
+        aw(ws)
+
+    # Trade Log
+    if "Trade Log" in wb.sheetnames and df_trades is not None:
+        ws = wb["Trade Log"]; hdr(ws); ws.freeze_panes = "A2"
+        for i, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row), 1):
+            res = str(row[-1].value or ""); rsn = str(row[-2].value or "")
+            bg  = GL if res=="WIN" else RL if res=="LOSS" else (GA if i%2==0 else WH)
+            if res=="WIN":  row[-1].font=Font(bold=True,color=GD)
+            if res=="LOSS": row[-1].font=Font(bold=True,color=RD)
+            if rsn.startswith("Hard SL"):
+                row[-2].fill=PatternFill("solid",fgColor="FF0000")
+                row[-2].font=Font(bold=True,color="FFFFFF")
+            elif "Stop Loss" in rsn:
+                row[-2].fill=PatternFill("solid",fgColor=OR)
+                row[-2].font=Font(bold=True,color="C55A11")
+            elif "EOD" in rsn:
+                row[-2].fill=PatternFill("solid",fgColor=TL)
+                row[-2].font=Font(bold=True,color="2E75B6")
+            for cell in row:
+                if not cell.fill or cell.fill.fgColor.rgb in ("00000000","FFFFFFFF"):
+                    cell.fill=PatternFill("solid",fgColor=bg)
+                cell.border=bdr; cell.alignment=Alignment(horizontal="center")
+        aw(ws)
+
+    # Daily P&L
+    if "Daily P&L" in wb.sheetnames and df_day is not None:
+        ws = wb["Daily P&L"]; hdr(ws); ws.freeze_panes = "A2"; rc = ws.max_column
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+            dr = str(row[rc-1].value or "")
+            bg = GL if "Profit" in dr else RL if "Loss" in dr else GA
+            if "Profit" in dr: row[rc-1].font=Font(bold=True,color=GD)
+            elif "Loss"  in dr:row[rc-1].font=Font(bold=True,color=RD)
+            for cell in row:
+                cell.fill=PatternFill("solid",fgColor=bg); cell.border=bdr
+                cell.alignment=Alignment(horizontal="center")
+        aw(ws)
+
+    # Time Slot P&L
+    if "Time Slot P&L" in wb.sheetnames and df_ts is not None:
+        ws = wb["Time Slot P&L"]; hdr(ws, bg="2E4057"); ws.freeze_panes = "A2"
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+            try: pv = float(row[5].value) if row[5].value not in (None,"—") else 0
+            except: pv = 0
+            bg = GL if pv > 0 else RL if pv < 0 else GA
+            vd = str(row[-1].value or "")
+            if "🟢" in vd: row[-1].font=Font(bold=True,color=GD)
+            elif "🔴" in vd:row[-1].font=Font(bold=True,color=RD)
+            for cell in row:
+                cell.fill=PatternFill("solid",fgColor=bg); cell.border=bdr
+                cell.alignment=Alignment(horizontal="center")
+        aw(ws)
+
+    # Holding Time Summary
+    if "Holding Time Summary" in wb.sheetnames:
+        ws = wb["Holding Time Summary"]; hdr(ws, bg="2E4057")
+        HOLD_SECS = {"OVERALL HOLDING TIME","BY RESULT","BY DIRECTION","DURATION DISTRIBUTION"}
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+            lbl = str(row[0].value or "")
+            if lbl in HOLD_SECS:
+                for c in row:
+                    c.fill=PatternFill("solid",fgColor="2E4057")
+                    c.font=Font(bold=True,color=WH,size=10); c.border=bdr
+                continue
+            for c in row:
+                c.border=bdr; c.alignment=Alignment(horizontal="left")
+            if len(row) > 1:
+                if "Winner" in lbl or "Profit" in lbl:
+                    row[1].fill=PatternFill("solid",fgColor=GL)
+                elif "Loser" in lbl or "Loss" in lbl:
+                    row[1].fill=PatternFill("solid",fgColor=RL)
+        ws.column_dimensions["A"].width=32; ws.column_dimensions["B"].width=28
+
+    # Holding By Time Slot
+    if "Holding By Time Slot" in wb.sheetnames:
+        ws = wb["Holding By Time Slot"]; hdr(ws, bg="2E4057"); ws.freeze_panes="A2"
+        for i, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row), 1):
+            bg = GA if i % 2 == 0 else WH
+            for cell in row:
+                cell.fill=PatternFill("solid",fgColor=bg); cell.border=bdr
+                cell.alignment=Alignment(horizontal="center")
+        aw(ws)
+
+    # Summary
+    if "Summary" in wb.sheetnames:
+        ws = wb["Summary"]; hdr(ws)
+        SECS = {"STRATEGY INFO","EXIT CONFIG","FILTERS","TRADE STATS","P&L STATS",
+                "HOLDING TIME","POINTS","DAY STATS","OPTION P&L (Greeks-based)"}
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+            lbl = str(row[0].value or "")
+            if lbl in SECS:
+                for c in row:
+                    c.fill=PatternFill("solid",fgColor=YS)
+                    c.font=Font(bold=True,size=10); c.border=bdr
+                continue
+            for c in row:
+                c.border=bdr; c.alignment=Alignment(horizontal="left")
+            if len(row)>1 and "Net Points" in lbl:
+                try: v=float(row[1].value)
+                except: v=0
+                row[1].fill=PatternFill("solid",fgColor=GL if v>0 else RL)
+                row[1].font=Font(bold=True,color=GD if v>0 else RD)
+        ws.column_dimensions["A"].width=32; ws.column_dimensions["B"].width=40
+
+    # Advanced Stats
+    ADV_SECS = {"DIRECTION BREAKDOWN","STREAK ANALYSIS","LOW-POINT TRADES","DAILY POINT AVERAGES"}
+    if "Advanced Stats" in wb.sheetnames:
+        ws = wb["Advanced Stats"]; hdr(ws, bg="2E4057")
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+            lbl = str(row[0].value or "")
+            if lbl in ADV_SECS:
+                for c in row:
+                    c.fill=PatternFill("solid",fgColor="2E4057")
+                    c.font=Font(bold=True,color=WH,size=10); c.border=bdr
+                continue
+            for c in row:
+                c.border=bdr; c.alignment=Alignment(horizontal="left")
+            if len(row) > 1:
+                if "Win Streak" in lbl:
+                    row[1].fill=PatternFill("solid",fgColor=GL)
+                    row[1].font=Font(bold=True,color=GD)
+                elif "Loss Streak" in lbl:
+                    row[1].fill=PatternFill("solid",fgColor=RL)
+                    row[1].font=Font(bold=True,color=RD)
+                elif "Avg Profit" in lbl or "Highest Profit" in lbl:
+                    row[1].fill=PatternFill("solid",fgColor=GL)
+                elif "Avg Loss" in lbl or "Highest Loss" in lbl:
+                    row[1].fill=PatternFill("solid",fgColor=RL)
+        ws.column_dimensions["A"].width=32; ws.column_dimensions["B"].width=36
+
+    if "Low-Point Trades" in wb.sheetnames:
+        ws = wb["Low-Point Trades"]; hdr(ws, bg="7B2D8B"); ws.freeze_panes="A2"
+        for i, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row), 1):
+            res = str(row[-1].value or "")
+            bg  = GL if res=="WIN" else RL if res=="LOSS" else (GA if i%2==0 else WH)
+            if res=="WIN":  row[-1].font=Font(bold=True,color=GD)
+            if res=="LOSS": row[-1].font=Font(bold=True,color=RD)
+            for cell in row:
+                if not cell.fill or cell.fill.fgColor.rgb in ("00000000","FFFFFFFF"):
+                    cell.fill=PatternFill("solid",fgColor=bg)
+                cell.border=bdr; cell.alignment=Alignment(horizontal="center")
+        aw(ws)
+
+    if "Low-Pt Per Day" in wb.sheetnames:
+        ws = wb["Low-Pt Per Day"]; hdr(ws, bg="7B2D8B"); ws.freeze_panes="A2"
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+            for cell in row:
+                cell.fill=PatternFill("solid",fgColor=GA); cell.border=bdr
+                cell.alignment=Alignment(horizontal="center")
+        aw(ws)
+
+    # Option P&L Summary
+    if "Option P&L Summary" in wb.sheetnames:
+        ws = wb["Option P&L Summary"]; hdr(ws, bg="4B0082", fg=WH); ws.freeze_panes="A2"
+        for i, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row), 1):
+            res = str(row[-1].value or "")
+            bg  = GL if res=="WIN" else RL if res=="LOSS" else (GA if i%2==0 else WH)
+            if res=="WIN":  row[-1].font=Font(bold=True,color=GD)
+            if res=="LOSS": row[-1].font=Font(bold=True,color=RD)
+            # Color Option P&L ₹ cell based on sign
+            # The column index for 'Option P&L ₹' is position 14 (0-indexed) in the sheet
+            for cell in row:
+                if not cell.fill or cell.fill.fgColor.rgb in ("00000000","FFFFFFFF"):
+                    cell.fill=PatternFill("solid",fgColor=bg)
+                cell.border=bdr; cell.alignment=Alignment(horizontal="center")
+        aw(ws)
+
+    wb.save(fname)
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+#  CHART  (unchanged)
+# ───────────────────────────────────────────────────────────────────────────────
+def build_chart(df, trades, htf_enabled):
+    if CHART_DAYS:
+        udays  = sorted(df.index.normalize().unique())
+        cutoff = udays[-CHART_DAYS] if len(udays) >= CHART_DAYS else udays[0]
+        df_c   = df[df.index.normalize() >= cutoff].copy()
+    else:
+        df_c = df.copy()
+
+    fig = go.Figure()
+    fig.add_trace(go.Candlestick(
+        x=df_c.index, open=df_c["Open"], high=df_c["High"],
+        low=df_c["Low"], close=df_c["Close"], name="Price",
+        increasing_line_color="#26a69a", decreasing_line_color="#ef5350"))
+    fig.add_trace(go.Scatter(
+        x=df_c.index, y=df_c["ST_val"].where(df_c["ST_bull"]),
+        name=f"ST Bullish ({ST_PERIOD},{ST_MULTIPLIER})",
+        mode="lines", line=dict(color="#22c55e", width=2.5), connectgaps=False))
+    fig.add_trace(go.Scatter(
+        x=df_c.index, y=df_c["ST_val"].where(~df_c["ST_bull"]),
+        name=f"ST Bearish ({ST_PERIOD},{ST_MULTIPLIER})",
+        mode="lines", line=dict(color="#ef4444", width=2.5), connectgaps=False))
+
+    if htf_enabled and "HTF_bull" in df_c.columns:
+        htf_bull_bool = df_c["HTF_bull"].astype(bool)
+        mid = (df_c["High"] + df_c["Low"]) / 2
+        fig.add_trace(go.Scatter(x=df_c.index, y=mid.where(htf_bull_bool),
+            name="HTF Bullish", mode="lines",
+            line=dict(color="#86efac", width=1.2, dash="dot"), connectgaps=False))
+        fig.add_trace(go.Scatter(x=df_c.index, y=mid.where(~htf_bull_bool),
+            name="HTF Bearish", mode="lines",
+            line=dict(color="#fca5a5", width=1.2, dash="dot"), connectgaps=False))
+
+    if trades:
+        df_t = pd.DataFrame(trades); start = df_c.index[0]
+        def parse(col):
+            return pd.to_datetime(df_t[col], format="%Y-%m-%d %H:%M").dt.tz_localize(IST)
+        et=parse("Entry Time"); xt=parse("Exit Time")
+        ep=df_t["Entry Price"]; xp=df_t["Exit Price"]
+        dr=df_t["Direction"];   rs=df_t["Result"]; ex=df_t["Exit Reason"]
+        mask = et >= start
+        for xv,yv,nm,sym,col,ec in [
+            (et[mask&dr.str.contains("Long")].tolist(),  ep[mask&dr.str.contains("Long")].tolist(),  "Long Entry",  "triangle-up",   "#22c55e","white"),
+            (et[mask&dr.str.contains("Short")].tolist(), ep[mask&dr.str.contains("Short")].tolist(), "Short Entry", "triangle-down", "#ef4444","white"),
+            (xt[mask&(rs=="WIN")].tolist(),  xp[mask&(rs=="WIN")].tolist(),  "Exit WIN",  "circle",   "#86efac","#16a34a"),
+            (xt[mask&(rs=="LOSS")].tolist(), xp[mask&(rs=="LOSS")].tolist(), "Exit LOSS", "x",        "#fca5a5","#dc2626"),
+            (xt[mask&ex.str.startswith("Hard SL")].tolist(), xp[mask&ex.str.startswith("Hard SL")].tolist(), f"Hard SL ({HARD_SL_PCT}%)", "hexagram","#ff0000","white"),
+        ]:
+            if xv: fig.add_trace(go.Scatter(x=xv, y=yv, mode="markers", name=nm,
+                       marker=dict(symbol=sym,size=13,color=col,line=dict(color=ec,width=1.5))))
+
+    htf_lbl = f"HTF ST({HTF_ST_PERIOD},{HTF_ST_MULTIPLIER}) | " if htf_enabled else "HTF: OFF | "
+    fig.update_layout(
+        template="plotly_dark", height=820, xaxis_rangeslider_visible=False,
+        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="right", x=1, font=dict(size=9)),
+        margin=dict(l=60,r=40,t=120,b=50), font=dict(family="monospace",size=11),
+        title=dict(
+            text=(f"<b>{SYMBOL}</b>  |  Supertrend({ST_PERIOD},{ST_MULTIPLIER})<br>"
+                  f"<span style='font-size:10px;color:#94a3b8'>"
+                  f"{htf_lbl}Window={'ON' if TRADE_WINDOW_ENABLED else 'OFF'} | "
+                  f"ConfirmN={CONFIRM_CANDLES} | HardSL={HARD_SL_PCT}%</span>"),
+            x=0.5, xanchor="center"))
+    fig.update_yaxes(title_text="Price", showgrid=True, gridcolor="#1e293b")
+    fig.update_xaxes(showgrid=True, gridcolor="#1e293b",
+        rangebreaks=[dict(bounds=["sat","mon"]), dict(bounds=[15.5,9.25], pattern="hour")])
+
+    chart_name = f"{SYMBOL}_chart_v3.html"
+    fig.write_html(chart_name)
+    print(f"  Chart saved  → {chart_name}  (open in browser)")
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+#  MAIN
+# ───────────────────────────────────────────────────────────────────────────────
+def main():
+    print("\n" + "═"*60)
+    print("  SUPERTREND BACKTEST v3.0  —  CSV / yfinance Mode")
+    print("═"*60)
+    try:
+        df, htf_enabled = fetch_data()
+    except (ValueError, FileNotFoundError, ImportError) as e:
+        print(e); return
+
+    # ── Load VIX data for Vega effect (optional) ────────────────────────
+    vix_series = None
+    if OPTION_PNL_ENABLED:
+        vix_series = load_vix_csv(VIX_CSV)
+        if vix_series is None:
+            print("  ℹ  Option P&L: Delta + Gamma + Theta only (Vega disabled — no VIX data).")
+
+    trades = run_backtest(df, htf_enabled, vix_series)
+    df_trades, df_day, df_ts, adv, df_hold_sum, df_hold_slots = print_results(trades, htf_enabled)
+
+    print("  Exporting Excel …")
+    export_excel(df, df_trades, df_day, df_ts, htf_enabled, adv, df_hold_sum, df_hold_slots)
+
+    print("  Building chart …")
+    build_chart(df, trades, htf_enabled)
+    print("\n  ✅  Done.\n")
+
+
+if __name__ == "__main__":
+    main()

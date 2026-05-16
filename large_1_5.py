@@ -64,8 +64,8 @@ from openpyxl import load_workbook
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # ── CSV File Paths ─────────────────────────────────────────────────────────────
-BASE_CSV = "bt.csv"        # ← Your base timeframe CSV  (e.g. 1m data)
-HTF_CSV  = "nifty5m1.csv"         # ← Your HTF CSV             (e.g. 5m data)
+BASE_CSV = "Book1min.csv"        # ← Your base timeframe CSV  (e.g. 1m data)
+HTF_CSV  = "Book1.csv"         # ← Your HTF CSV             (e.g. 5m data)
                                   #   Set to None to auto-disable HTF filter:
                                   #   HTF_CSV = None
 

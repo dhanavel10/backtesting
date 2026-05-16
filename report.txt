@@ -1,0 +1,64 @@
+=================================================================
+  CONTRACTION ZONE BACKTEST — SUMMARY REPORT
+=================================================================
+
+  File analyzed         : .\nifty5m1.csv
+  Total candles         : 21000
+  Analysis date         : 2026-04-27 17:54
+
+─────────────────────────────────────────────────────────────────
+  PARAMETERS USED
+─────────────────────────────────────────────────────────────────
+  Lookback period       : 10 candles
+  Compression threshold : 70%
+  Progressive length    : 3 candles
+  ATR period            : 14
+  Min zone gap          : 3 candles
+
+─────────────────────────────────────────────────────────────────
+  ZONE COUNTS
+─────────────────────────────────────────────────────────────────
+  Total zones detected  : 3434
+  Progressive squeezes  : 403  (11.7%)
+
+  Moderate Contraction          : 1693  (49.3%)
+  Mild Contraction              : 1486  (43.3%)
+  Strong Contraction            : 247  (7.2%)
+  Extreme Squeeze               : 8  (0.2%)
+
+─────────────────────────────────────────────────────────────────
+  COMPRESSION STATS
+─────────────────────────────────────────────────────────────────
+  Mean compression ratio : 0.571  (57.1% of avg range)
+  Min compression ratio  : 0.216  (21.6%)
+  Max compression ratio  : 0.700  (70.0%)
+  Std dev                : 0.0912
+
+─────────────────────────────────────────────────────────────────
+  ZONE SCORE STATS
+─────────────────────────────────────────────────────────────────
+  Mean score    : 32.8 / 100
+  Highest score : 75.7
+  Lowest score  : 10.0
+  Zones ≥ 70    : 8
+  Zones ≥ 50    : 255
+
+─────────────────────────────────────────────────────────────────
+  BREAKOUT ANALYSIS  (lookahead ≤ 20 bars)
+─────────────────────────────────────────────────────────────────
+  Zones with breakout   : 3150  (91.7%)
+  Upside breakouts      : 1669
+  Downside breakdowns   : 1481
+  Avg candles to break  : 4.6
+  Avg breakout magnitude: 15.4317
+
+─────────────────────────────────────────────────────────────────
+  TOP 5 ZONES BY SCORE
+─────────────────────────────────────────────────────────────────
+  [ 75.7]  25-06-2025 10:25        Close=25207.7  Comp=38.0%  Extreme Squeeze
+  [ 74.0]  17-07-2025 15:15        Close=25113.15  Comp=41.3%  Extreme Squeeze
+  [ 72.8]  10-01-2025 10:55        Close=23460.45  Comp=35.8%  Extreme Squeeze
+  [ 72.5]  09-07-2025 15:05        Close=25476.35  Comp=29.3%  Extreme Squeeze
+  [ 72.3]  07-02-2025 11:55        Close=23646.6  Comp=33.9%  Extreme Squeeze
+
+=================================================================
