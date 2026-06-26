@@ -1,0 +1,483 @@
+{
+  "us_markets": [
+    {
+      "Index": "S&P 500",
+      "Last": "7,548.50",
+      "Change": "+28.14",
+      "Chg%": 0.3741860393695578,
+      "Sentiment": "\u001b[33m\u001b[1mNEUTRAL \ud83d\udfe1\u001b[0m"
+    },
+    {
+      "Index": "NASDAQ",
+      "Last": "26,786.84",
+      "Change": "+112.11",
+      "Chg%": 0.42027574376556937,
+      "Sentiment": "\u001b[33m\u001b[1mNEUTRAL \ud83d\udfe1\u001b[0m"
+    },
+    {
+      "Index": "Dow Jones",
+      "Last": "50,682.92",
+      "Change": "+38.64",
+      "Chg%": 0.07629810127871052,
+      "Sentiment": "\u001b[33m\u001b[1mNEUTRAL \ud83d\udfe1\u001b[0m"
+    },
+    {
+      "Index": "US VIX",
+      "Last": "16.18",
+      "Change": "-0.11",
+      "Chg%": -0.6752646050910398,
+      "Sentiment": "\u001b[31m\u001b[1mBEARISH \ud83d\udd34\u001b[0m"
+    },
+    {
+      "Index": "Russell 2000",
+      "Last": "2,900.89",
+      "Change": "-19.05",
+      "Chg%": -0.652337100924292,
+      "Sentiment": "\u001b[31m\u001b[1mBEARISH \ud83d\udd34\u001b[0m"
+    }
+  ],
+  "yields_dxy": [
+    {
+      "Instrument": "US 10Y Yield",
+      "Value": "4.485",
+      "Change": "+0.0040",
+      "Chg%": 0.08925932003297105,
+      "India Impact": "\u001b[33m\u001b[1mWatch\u001b[0m"
+    },
+    {
+      "Instrument": "US 2Y Yield",
+      "Value": "3.585",
+      "Change": "-0.0000",
+      "Chg%": -6.650448439738292e-06,
+      "India Impact": "\u001b[33m\u001b[1mWatch\u001b[0m"
+    },
+    {
+      "Instrument": "Dollar Index (DXY)",
+      "Value": "99.23",
+      "Change": "+0.02",
+      "Chg%": 0.023185792484619515,
+      "India Impact": "\u001b[33m\u001b[1mNeutral\u001b[0m"
+    }
+  ],
+  "gift_nifty": {
+    "Nifty 50 Spot (Last Close)": "23,907.15",
+    "Change": "+0.00",
+    "Chg%": "+0.00%",
+    "Opening Signal": "\u001b[33m\u001b[1mFlat Open expected \ud83d\udfe1\u001b[0m",
+    "Note": "Watch first 15 mins \u2014 reversal possible"
+  },
+  "commodities": [
+    {
+      "Commodity": "Brent Crude (USD/bbl)",
+      "Price": "94.52",
+      "Change": "+0.23",
+      "Chg%": 0.24392377272868135,
+      "India Impact": "\u001b[33m\u001b[1mNeutral\u001b[0m"
+    },
+    {
+      "Commodity": "WTI Crude (USD/bbl)",
+      "Price": "91.03",
+      "Change": "+2.35",
+      "Chg%": 2.6499757172237364,
+      "India Impact": "\u001b[31m\u001b[1mBearish India \ud83d\udee2\ufe0f\u001b[0m"
+    },
+    {
+      "Commodity": "Gold (USD/oz)",
+      "Price": "4455.00",
+      "Change": "+7.50",
+      "Chg%": 0.16863406408094433,
+      "India Impact": "\u001b[33m\u001b[1mRisk-on mode\u001b[0m"
+    },
+    {
+      "Commodity": "Silver (USD/oz)",
+      "Price": "73.55",
+      "Change": "-1.05",
+      "Chg%": -1.4061796879474402,
+      "India Impact": "\u001b[33m\u001b[1mWatch\u001b[0m"
+    },
+    {
+      "Commodity": "Natural Gas",
+      "Price": "3.17",
+      "Change": "+0.13",
+      "Chg%": 4.210527058783669,
+      "India Impact": "\u001b[33m\u001b[1mWatch\u001b[0m"
+    }
+  ],
+  "india_indices": [
+    {
+      "Index": "Nifty 50",
+      "Value": "23,907.15",
+      "Chg%": -0.02738525756761741,
+      "Trend": "\u001b[33m\u001b[1mNEUTRAL \ud83d\udfe1\u001b[0m"
+    },
+    {
+      "Index": "Bank Nifty",
+      "Value": "54,853.85",
+      "Chg%": -0.43389780131315137,
+      "Trend": "\u001b[33m\u001b[1mNEUTRAL \ud83d\udfe1\u001b[0m"
+    },
+    {
+      "Index": "BSE Sensex",
+      "Value": "75,867.80",
+      "Chg%": -0.18669491415672465,
+      "Trend": "\u001b[33m\u001b[1mNEUTRAL \ud83d\udfe1\u001b[0m"
+    },
+    {
+      "Index": "India VIX",
+      "Value": "14.98",
+      "Chg%": -7.129570231642951,
+      "Status": "\u001b[33m\u001b[1mNormal \ud83d\ude10\u001b[0m"
+    },
+    {
+      "Index": "Nifty IT",
+      "Value": "28,906.70",
+      "Chg%": -0.247772594337181,
+      "Trend": "\u001b[33m\u001b[1mNEUTRAL \ud83d\udfe1\u001b[0m"
+    },
+    {
+      "Index": "Nifty Midcap",
+      "Value": "71,957.20",
+      "Chg%": 1.4265982290664228,
+      "Trend": "\u001b[32m\u001b[1mBULLISH \ud83d\udfe2\u001b[0m"
+    }
+  ],
+  "usdinr": {
+    "USD/INR Rate": "95.6800",
+    "Change": "-0.2250",
+    "Chg%": "-0.235%",
+    "Impact": "\u001b[32m\u001b[1mRupee strengthening \u2014 Bullish \ud83d\udcc8\u001b[0m",
+    "RBI Note": "FII inflows supportive"
+  },
+  "fii_dii": [
+    {
+      "Date": "27-May-2026",
+      "Participant": "FII/FPI",
+      "Buy (\u20b9Cr)": "0.00",
+      "Sell (\u20b9Cr)": "0.00",
+      "Net (\u20b9Cr)": "\u001b[31m\u001b[1m0.00\u001b[0m",
+      "Signal": "\u001b[31m\u001b[1mSELLING \ud83d\udd34\u001b[0m"
+    },
+    {
+      "Date": "27-May-2026",
+      "Participant": "DII",
+      "Buy (\u20b9Cr)": "0.00",
+      "Sell (\u20b9Cr)": "0.00",
+      "Net (\u20b9Cr)": "\u001b[31m\u001b[1m0.00\u001b[0m",
+      "Signal": "\u001b[31m\u001b[1mSELLING \ud83d\udd34\u001b[0m"
+    },
+    {
+      "Date": "27-May-2026",
+      "Participant": "FII/FPI",
+      "Buy (\u20b9Cr)": "0.00",
+      "Sell (\u20b9Cr)": "0.00",
+      "Net (\u20b9Cr)": "\u001b[31m\u001b[1m0.00\u001b[0m",
+      "Signal": "\u001b[31m\u001b[1mSELLING \ud83d\udd34\u001b[0m"
+    },
+    {
+      "Date": "27-May-2026",
+      "Participant": "DII",
+      "Buy (\u20b9Cr)": "0.00",
+      "Sell (\u20b9Cr)": "0.00",
+      "Net (\u20b9Cr)": "\u001b[31m\u001b[1m0.00\u001b[0m",
+      "Signal": "\u001b[31m\u001b[1mSELLING \ud83d\udd34\u001b[0m"
+    }
+  ],
+  "sectoral": [
+    {
+      "Sector": "Nifty Bank",
+      "Last": "54,853.85",
+      "Chg%": "\u001b[31m\u001b[1m-0.43%\u001b[0m",
+      "Momentum": "\u2192 Flat"
+    },
+    {
+      "Sector": "Nifty IT",
+      "Last": "28,906.70",
+      "Chg%": "\u001b[31m\u001b[1m-0.25%\u001b[0m",
+      "Momentum": "\u2192 Flat"
+    },
+    {
+      "Sector": "Nifty Pharma",
+      "Last": "24,716.00",
+      "Chg%": "\u001b[32m\u001b[1m+0.23%\u001b[0m",
+      "Momentum": "\u2192 Flat"
+    },
+    {
+      "Sector": "Nifty Auto",
+      "Last": "26,864.20",
+      "Chg%": "\u001b[32m\u001b[1m+1.45%\u001b[0m",
+      "Momentum": "\u2191 Strong"
+    },
+    {
+      "Sector": "Nifty FMCG",
+      "Last": "50,141.90",
+      "Chg%": "\u001b[31m\u001b[1m-0.17%\u001b[0m",
+      "Momentum": "\u2192 Flat"
+    },
+    {
+      "Sector": "Nifty Metal",
+      "Last": "13,718.30",
+      "Chg%": "\u001b[32m\u001b[1m+1.67%\u001b[0m",
+      "Momentum": "\u2191 Strong"
+    },
+    {
+      "Sector": "Nifty Realty",
+      "Last": "784.55",
+      "Chg%": "\u001b[32m\u001b[1m+0.33%\u001b[0m",
+      "Momentum": "\u2192 Flat"
+    },
+    {
+      "Sector": "Nifty Energy",
+      "Last": "41,535.75",
+      "Chg%": "\u001b[32m\u001b[1m+1.77%\u001b[0m",
+      "Momentum": "\u2191 Strong"
+    },
+    {
+      "Sector": "Nifty Infra",
+      "Last": "9,499.00",
+      "Chg%": "\u001b[32m\u001b[1m+0.86%\u001b[0m",
+      "Momentum": "\u2192 Flat"
+    }
+  ],
+  "heavyweights": [
+    {
+      "Stock": "Reliance Industries",
+      "LTP (\u20b9)": "1350.50",
+      "Chg (\u20b9)": "-5.80",
+      "Chg%": "\u001b[31m\u001b[1m-0.43%\u001b[0m"
+    },
+    {
+      "Stock": "HDFC Bank",
+      "LTP (\u20b9)": "758.65",
+      "Chg (\u20b9)": "-20.25",
+      "Chg%": "\u001b[31m\u001b[1m-2.60%\u001b[0m"
+    },
+    {
+      "Stock": "ICICI Bank",
+      "LTP (\u20b9)": "1272.70",
+      "Chg (\u20b9)": "-6.40",
+      "Chg%": "\u001b[31m\u001b[1m-0.50%\u001b[0m"
+    },
+    {
+      "Stock": "Infosys",
+      "LTP (\u20b9)": "1159.90",
+      "Chg (\u20b9)": "-7.80",
+      "Chg%": "\u001b[31m\u001b[1m-0.67%\u001b[0m"
+    },
+    {
+      "Stock": "TCS",
+      "LTP (\u20b9)": "2284.20",
+      "Chg (\u20b9)": "+8.00",
+      "Chg%": "\u001b[32m\u001b[1m+0.35%\u001b[0m"
+    },
+    {
+      "Stock": "Bharti Airtel",
+      "LTP (\u20b9)": "1852.20",
+      "Chg (\u20b9)": "+5.30",
+      "Chg%": "\u001b[32m\u001b[1m+0.29%\u001b[0m"
+    },
+    {
+      "Stock": "ITC",
+      "LTP (\u20b9)": "291.95",
+      "Chg (\u20b9)": "-1.70",
+      "Chg%": "\u001b[31m\u001b[1m-0.58%\u001b[0m"
+    },
+    {
+      "Stock": "L&T",
+      "LTP (\u20b9)": "4047.50",
+      "Chg (\u20b9)": "+9.70",
+      "Chg%": "\u001b[32m\u001b[1m+0.24%\u001b[0m"
+    },
+    {
+      "Stock": "SBI",
+      "LTP (\u20b9)": "967.80",
+      "Chg (\u20b9)": "-0.70",
+      "Chg%": "\u001b[31m\u001b[1m-0.07%\u001b[0m"
+    },
+    {
+      "Stock": "Kotak Mahindra Bank",
+      "LTP (\u20b9)": "388.70",
+      "Chg (\u20b9)": "+0.05",
+      "Chg%": "\u001b[32m\u001b[1m+0.01%\u001b[0m"
+    },
+    {
+      "Stock": "HCL Technologies",
+      "LTP (\u20b9)": "1165.20",
+      "Chg (\u20b9)": "+3.30",
+      "Chg%": "\u001b[32m\u001b[1m+0.28%\u001b[0m"
+    },
+    {
+      "Stock": "Axis Bank",
+      "LTP (\u20b9)": "1304.10",
+      "Chg (\u20b9)": "+4.80",
+      "Chg%": "\u001b[32m\u001b[1m+0.37%\u001b[0m"
+    }
+  ],
+  "global_indices": [
+    {
+      "Index": "Nikkei 225 (Japan)",
+      "Last": "64,693.12",
+      "Chg%": "\u001b[31m\u001b[1m-0.47%\u001b[0m"
+    },
+    {
+      "Index": "Hang Seng (HK)",
+      "Last": "25,006.16",
+      "Chg%": "\u001b[31m\u001b[1m-1.27%\u001b[0m"
+    },
+    {
+      "Index": "Shanghai Comp (China)",
+      "Last": "4,098.64",
+      "Chg%": "\u001b[32m\u001b[1m+0.12%\u001b[0m"
+    },
+    {
+      "Index": "KOSPI (Korea)",
+      "Last": "8,185.29",
+      "Chg%": "\u001b[31m\u001b[1m-0.53%\u001b[0m"
+    },
+    {
+      "Index": "Taiwan TAIEX",
+      "Last": "43,636.44",
+      "Chg%": "\u001b[31m\u001b[1m-1.40%\u001b[0m"
+    },
+    {
+      "Index": "DAX (Germany)",
+      "Last": "25,044.34",
+      "Chg%": "\u001b[31m\u001b[1m-0.53%\u001b[0m"
+    },
+    {
+      "Index": "FTSE 100 (UK)",
+      "Last": "10,395.40",
+      "Chg%": "\u001b[31m\u001b[1m-1.04%\u001b[0m"
+    },
+    {
+      "Index": "CAC 40 (France)",
+      "Last": "8,161.15",
+      "Chg%": "\u001b[31m\u001b[1m-0.57%\u001b[0m"
+    },
+    {
+      "Index": "SGX Nifty",
+      "Last": "23,907.15",
+      "Chg%": "\u001b[31m\u001b[1m-0.03%\u001b[0m"
+    }
+  ],
+  "economic_calendar": [
+    {
+      "Note": "Calendar scrape unavailable today",
+      "Manual Check": "https://in.investing.com/economic-calendar/",
+      "Key Events to Watch": "Fed speakers, RBI data, US CPI, NFP (if Friday)"
+    }
+  ],
+  "news": {
+    "\ud83c\uddee\ud83c\uddf3 India Markets": [
+      {
+        "Headline": "Stock Market Holiday 2026: Are NSE, BSE closed today for Bakri Id? Check market closing da",
+        "Source": "Google News",
+        "Published": "Thu, 28 May 2026"
+      },
+      {
+        "Headline": "Stock market holiday: BSE, NSE shut today for Bakri Id; next holiday Jun 26 - Business Sta",
+        "Source": "Google News",
+        "Published": "Thu, 28 May 2026"
+      },
+      {
+        "Headline": "Stock market holiday today on May 28: BSE, NSE to remain closed today on account of Bakri ",
+        "Source": "Google News",
+        "Published": "Thu, 28 May 2026"
+      },
+      {
+        "Headline": "India on track to become stock-pickers' market in June, brokerages say - Reuters",
+        "Source": "Google News",
+        "Published": "Wed, 27 May 2026"
+      }
+    ],
+    "\ud83c\udf0d Global Economy": [
+      {
+        "Headline": "For a yuan in deeper markets, ex-Fed\u2019s Evans cites dollar playbook, flags risks - South Ch",
+        "Source": "Google News",
+        "Published": "Thu, 28 May 2026"
+      },
+      {
+        "Headline": "Amid wartime disruptions, most emerging-market central banks will follow the Fed - Peterso",
+        "Source": "Google News",
+        "Published": "Thu, 23 Apr 2026"
+      },
+      {
+        "Headline": "Global shocks are back: Emerging markets holding up - CEPR",
+        "Source": "Google News",
+        "Published": "Tue, 14 Apr 2026"
+      },
+      {
+        "Headline": "Charting the Global Economy: US jobs, inflation send mixed signals for Fed - The Economic ",
+        "Source": "Google News",
+        "Published": "Sun, 15 Feb 2026"
+      }
+    ],
+    "\ud83d\udee2\ufe0f  Crude Oil": [
+      {
+        "Headline": "Crude oil price chart 2020-2026 - Statista",
+        "Source": "Google News",
+        "Published": "Mon, 13 Apr 2026"
+      },
+      {
+        "Headline": "Why are oil prices down now, and will Brent, US WTI crude futures continue to drop or rise",
+        "Source": "Google News",
+        "Published": "Wed, 29 Apr 2026"
+      },
+      {
+        "Headline": "OPEC + Delivers Modest Output Hike, Brent Crude Rises 1.7%. What Next for Oil Prices? - ma",
+        "Source": "Google News",
+        "Published": "Mon, 06 Oct 2025"
+      },
+      {
+        "Headline": "Oil Futures Rise As Middle East Stalemate Drags On - WSJ",
+        "Source": "Google News",
+        "Published": "Wed, 29 Apr 2026"
+      }
+    ],
+    "\ud83e\udd47 Gold Markets": [
+      {
+        "Headline": "Gold (XAU/USD) Price Forecast for Today, Tomorrow, Next Week, and the Next 30 Days - LiteF",
+        "Source": "Google News",
+        "Published": "Thu, 28 May 2026"
+      },
+      {
+        "Headline": "Gold Price Forecast: XAU/USD sellers attack critical 200-day SMA near $4,400 on renewed Ir",
+        "Source": "Google News",
+        "Published": "Thu, 28 May 2026"
+      },
+      {
+        "Headline": "Gold Price Alert: XAU/USD Support Finally Breaks - FOREX.com",
+        "Source": "Google News",
+        "Published": "Wed, 27 May 2026"
+      },
+      {
+        "Headline": "XAU/USD Forecast Today 28/05: Test 200-Day EMA (Video&Chart) - DailyForex",
+        "Source": "Google News",
+        "Published": "Thu, 28 May 2026"
+      }
+    ],
+    "\ud83d\udcb5 Dollar / Rupee": [
+      {
+        "Headline": "RBI's $5 Billion Rupee-Dollar Swap: What It Means and Why It Matters - India Infoline",
+        "Source": "Google News",
+        "Published": "Fri, 22 May 2026"
+      },
+      {
+        "Headline": "Rupee Firms as USD/INR Slides, RBI Backstop in Focus Amid Oil Swings and FII Outflows - VT",
+        "Source": "Google News",
+        "Published": "Mon, 25 May 2026"
+      },
+      {
+        "Headline": "Central bank helping hand muscles breathing room for rupee, cools forward premiums - Reute",
+        "Source": "Google News",
+        "Published": "Fri, 22 May 2026"
+      },
+      {
+        "Headline": "RBI Dollar-Rupee Swap Auction Oversubscribed - Rediff MoneyWiz",
+        "Source": "Google News",
+        "Published": "Wed, 27 May 2026"
+      }
+    ]
+  },
+  "overall_sentiment": "\u001b[31m\u001b[1m\ud83d\udd34 MILDLY BEARISH \u2014 Negative bias, risk-off sentiment\u001b[0m",
+  "generated_at": "2026-05-28T19:44:54.901057+05:30"
+}

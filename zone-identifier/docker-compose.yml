@@ -1,0 +1,12 @@
+services:
+  backtest-sr:
+    build: .
+    ports:
+      - "2324:2324"   # Dashboard HTML  → http://<host>:2324
+      - "8086:8086"   # Nifty tick feed → ws://<host>:8086/ws
+      - "8087:8087"   # Dashboard WS    → ws://<host>:8087
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # Linux: maps to host machine
+    restart: unless-stopped

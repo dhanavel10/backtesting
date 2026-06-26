@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S/R Zone Monitor · Nifty</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;700&display=swap');
+
+  :root {
+    --bg:        #080c10;
+    --bg2:       #0d1117;
+    --bg3:       #131920;
+    --border:    rgba(255,255,255,0.07);
+    --text:      #c9d1d9;
+    --muted:     #4a5568;
+    --sup:       #26a69a;
+    --sup-dim:   rgba(38,166,154,0.12);
+    --res:       #ef5350;
+    --res-dim:   rgba(239,83,80,0.12);
+    --signal:    #ffd54f;
+    --signal-dim:rgba(255,213,79,0.10);
+    --ce:        #69ff47;
+    --pe:        #ff6b6b;
+    --hi:        #ffffff;
+    --mono:      'Space Mono', monospace;
+    --sans:      'DM Sans', sans-serif;
+  }
+
+  * { margin:0; padding:0; box-sizing:border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 13px;
+    min-height: 100vh;
+    display: grid;
+    grid-template-rows: 48px 1fr;
+    grid-template-columns: 1fr;
+  }
+
+  /* ── Header ─────────────────────────────────── */
+  header {
+    background: var(--bg2);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 20px;
+    gap: 20px;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  .logo {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--hi);
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }
+  .logo span { color: var(--sup); }
+
+  .price-box {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-left: auto;
+  }
+  #cmp {
+    font-family: var(--mono);
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--hi);
+    transition: color 0.3s;
+  }
+  #cmp.up   { color: var(--sup); }
+  #cmp.down { color: var(--res); }
+  #cmp-change {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  .pill {
+    padding: 2px 10px;
+    border-radius: 99px;
+    font-size: 11px;
+    font-family: var(--mono);
+    letter-spacing: 0.5px;
+  }
+  #conn-pill { background: var(--res-dim); color: var(--res); border: 1px solid var(--res); }
+  #conn-pill.live { background: var(--sup-dim); color: var(--sup); border-color: var(--sup); }
+
+  .stat { display:flex; flex-direction:column; align-items:center; }
+  .stat .val { font-family:var(--mono); font-size:13px; color:var(--hi); }
+  .stat .lbl { font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; }
+
+  /* ── Layout ─────────────────────────────────── */
+  main {
+    display: grid;
+    grid-template-columns: 340px 1fr 300px;
+    grid-template-rows: 1fr;
+    height: calc(100vh - 48px);
+    overflow: hidden;
+  }
+
+  /* ── Panel base ─────────────────────────────── */
+  .panel {
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .panel:last-child { border-right: none; }
+
+  .panel-header {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+  }
+  .panel-header .count {
+    background: var(--bg3);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 10px;
+    color: var(--text);
+  }
+
+  .panel-body {
+    flex: 1;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+
+  /* ── Zone Cards ─────────────────────────────── */
+  .zone-section {
+    padding: 8px 0;
+  }
+  .zone-section-label {
+    font-family: var(--mono);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    padding: 4px 14px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .zone-section-label::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  .cmp-divider {
+    margin: 0 14px;
+    padding: 6px 10px;
+    background: var(--signal-dim);
+    border: 1px solid rgba(255,213,79,0.25);
+    border-radius: 6px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--signal);
+    text-align: center;
+    letter-spacing: 0.5px;
+  }
+
+  .zone-card {
+    margin: 3px 10px;
+    padding: 9px 12px;
+    border-radius: 8px;
+    border: 1px solid transparent;
+    cursor: default;
+    transition: all 0.15s;
+    position: relative;
+    overflow: hidden;
+  }
+  .zone-card::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 3px;
+    border-radius: 2px 0 0 2px;
+  }
+  .zone-card.sup { background: var(--sup-dim); border-color: rgba(38,166,154,0.2); }
+  .zone-card.sup::before { background: var(--sup); }
+  .zone-card.res { background: var(--res-dim); border-color: rgba(239,83,80,0.2); }
+  .zone-card.res::before { background: var(--res); }
+  .zone-card:hover { transform: translateX(2px); }
+
+  .zone-row1 {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 5px;
+  }
+  .zone-price {
+    font-family: var(--mono);
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--hi);
+  }
+  .zone-range {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+  }
+  .zone-badge {
+    font-size: 10px;
+    font-family: var(--mono);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-weight: 700;
+  }
+  .zone-badge.sup { background: rgba(38,166,154,0.25); color: var(--sup); }
+  .zone-badge.res { background: rgba(239,83,80,0.25);  color: var(--res); }
+
+  .zone-stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 4px;
+    margin-top: 4px;
+  }
+  .zone-stat {
+    text-align: center;
+  }
+  .zone-stat .v { font-family: var(--mono); font-size: 11px; color: var(--text); }
+  .zone-stat .l { font-size: 9px; color: var(--muted); }
+
+  .strength-bar {
+    height: 3px;
+    border-radius: 2px;
+    margin-top: 6px;
+    background: var(--border);
+    overflow: hidden;
+  }
+  .strength-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.5s ease;
+  }
+  .sup .strength-fill { background: linear-gradient(90deg, #26a69a, #4dd0ca); }
+  .res .strength-fill { background: linear-gradient(90deg, #ef5350, #ff867c); }
+
+  /* ── Middle panel: Chart area ───────────────── */
+  .chart-panel {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  #zone-chart {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+  }
+
+  /* Mini price ladder (visual) */
+  #ladder {
+    width: 100%;
+    height: 100%;
+    position: relative;
+  }
+
+  .ladder-zone {
+    position: absolute;
+    left: 8%;
+    width: 76%;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    padding: 0 10px;
+    font-family: var(--mono);
+    font-size: 10px;
+    transition: all 0.3s ease;
+  }
+  .ladder-cmp {
+    position: absolute;
+    left: 2%;
+    width: 92%;
+    height: 2px;
+    background: var(--signal);
+    box-shadow: 0 0 8px var(--signal);
+    border-radius: 1px;
+    z-index: 10;
+    transition: top 0.4s ease;
+  }
+  .ladder-cmp-label {
+    position: absolute;
+    right: 4px;
+    top: -10px;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--signal);
+    white-space: nowrap;
+  }
+
+  .ladder-price-axis {
+    position: absolute;
+    right: 8px;
+    top: 0;
+    bottom: 0;
+    width: 60px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    pointer-events: none;
+  }
+  .axis-tick {
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--muted);
+    text-align: right;
+  }
+
+  /* ── Signal log ─────────────────────────────── */
+  .signal-item {
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--border);
+    animation: fadeIn 0.3s ease;
+  }
+  @keyframes fadeIn { from { opacity:0; transform:translateY(-4px); } to { opacity:1; } }
+
+  .signal-row1 {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 4px;
+  }
+  .signal-type-badge {
+    font-family: var(--mono);
+    font-size: 9px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    flex-shrink: 0;
+  }
+  .REJECTION_LONG  { background:rgba(105,255,71,0.15);  color:#69ff47; border:1px solid rgba(105,255,71,0.3); }
+  .REJECTION_SHORT { background:rgba(255,107,107,0.15); color:#ff6b6b; border:1px solid rgba(255,107,107,0.3); }
+  .BREAKOUT_LONG   { background:rgba(105,255,71,0.2);   color:#69ff47; border:1px solid #69ff47; }
+  .BREAKOUT_SHORT  { background:rgba(255,107,107,0.2);  color:#ff6b6b; border:1px solid #ff6b6b; }
+  .ZONE_APPROACH   { background:rgba(255,213,79,0.12);  color:#ffd54f; border:1px solid rgba(255,213,79,0.3); }
+  .ZONE_TEST       { background:rgba(149,117,205,0.15); color:#b39ddb; border:1px solid rgba(149,117,205,0.3); }
+
+  .signal-action {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--hi);
+  }
+  .signal-action.ce { color: var(--ce); }
+  .signal-action.pe { color: var(--pe); }
+
+  .conf-pill {
+    margin-left: auto;
+    font-size: 9px;
+    font-family: var(--mono);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+  .conf-pill.HIGH   { background:rgba(105,255,71,0.2); color:#69ff47; }
+  .conf-pill.MEDIUM { background:rgba(255,213,79,0.2); color:#ffd54f; }
+  .conf-pill.LOW    { background:var(--bg3); color:var(--muted); }
+
+  .signal-row2 {
+    display: flex;
+    gap: 12px;
+    font-size: 10px;
+    color: var(--muted);
+    font-family: var(--mono);
+  }
+  .signal-row2 b { color: var(--text); }
+
+  /* ── Pivot log ──────────────────────────────── */
+  .pivot-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 14px;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 11px;
+    animation: fadeIn 0.3s;
+  }
+  .pivot-sym { font-size: 14px; }
+  .pivot-price { color: var(--hi); font-weight: 700; }
+  .pivot-rev { color: var(--muted); font-size: 10px; margin-left: auto; }
+
+  /* ── Empty states ───────────────────────────── */
+  .empty {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--muted);
+    font-size: 12px;
+    font-family: var(--mono);
+  }
+
+  /* ── Scrollbar ──────────────────────────────── */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  /* ── Zone distance indicator ─────────────────── */
+  .dist-indicator {
+    font-size: 9px;
+    color: var(--muted);
+    font-family: var(--mono);
+    margin-left: 4px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">SR<span>·</span>LIVE</div>
+  <div class="pill" id="conn-pill">DISCONNECTED</div>
+
+  <div class="stat" style="margin-left:16px">
+    <span class="val" id="bar-count">0</span>
+    <span class="lbl">Bars</span>
+  </div>
+  <div class="stat">
+    <span class="val" id="tick-count">0</span>
+    <span class="lbl">Ticks</span>
+  </div>
+  <div class="stat">
+    <span class="val" id="zone-count">0</span>
+    <span class="lbl">Zones</span>
+  </div>
+  <div class="stat">
+    <span class="val" id="sig-count">0</span>
+    <span class="lbl">Signals</span>
+  </div>
+
+  <div class="price-box" style="margin-left:auto">
+    <div id="cmp">—</div>
+    <div id="cmp-change"></div>
+    <div id="symbol-label" class="pill" style="background:var(--bg3);color:var(--text);border:1px solid var(--border)">NIFTY</div>
+  </div>
+</header>
+
+<main>
+
+  <!-- LEFT: Zone list -->
+  <div class="panel">
+    <div class="panel-header">
+      S/R Zones
+      <span class="count" id="zone-count-hdr">0</span>
+    </div>
+    <div class="panel-body" id="zone-list">
+      <div class="empty">Waiting for data…</div>
+    </div>
+  </div>
+
+  <!-- CENTER: Price ladder + stats -->
+  <div class="chart-panel panel">
+    <div class="panel-header">
+      Price Ladder
+      <span style="font-size:9px;color:var(--muted)">live zone map</span>
+    </div>
+    <div id="zone-chart">
+      <div id="ladder"></div>
+    </div>
+
+    <!-- Pivot log below ladder -->
+    <div style="height:160px;border-top:1px solid var(--border);display:flex;flex-direction:column">
+      <div class="panel-header">Recent Pivots</div>
+      <div class="panel-body" id="pivot-list">
+        <div class="empty">No pivots yet…</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT: Signal log -->
+  <div class="panel">
+    <div class="panel-header">
+      Signal Log
+      <span class="count" id="sig-count-hdr">0</span>
+    </div>
+    <div class="panel-body" id="signal-list">
+      <div class="empty">No signals yet…</div>
+    </div>
+  </div>
+
+</main>
+
+<script>
+// ── State ─────────────────────────────────────────────────────
+let state = {
+  zones: [], signals: [], pivots: [],
+  cmp: 0, prevCmp: 0, symbol: 'NIFTY',
+  bars: 0, ticks: 0, sigCount: 0,
+};
+
+// ── WebSocket ─────────────────────────────────────────────────
+const WS_URL = 'ws://localhost:8766';
+let ws, reconnectTimer;
+
+function connect() {
+  clearTimeout(reconnectTimer);
+  ws = new WebSocket(WS_URL);
+
+  ws.onopen = () => {
+    document.getElementById('conn-pill').textContent = 'LIVE';
+    document.getElementById('conn-pill').classList.add('live');
+  };
+
+  ws.onclose = () => {
+    document.getElementById('conn-pill').textContent = 'RECONNECTING';
+    document.getElementById('conn-pill').classList.remove('live');
+    reconnectTimer = setTimeout(connect, 3000);
+  };
+
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    handleMessage(msg);
+  };
+}
+
+function handleMessage(msg) {
+  if (msg.type === 'state_update') {
+    state.zones   = msg.zones   || [];
+    state.signals = (msg.signals || []).slice(-60);
+    state.pivots  = (msg.pivots  || []).slice(-30);
+    state.prevCmp = state.cmp;
+    state.cmp     = msg.current_price || state.cmp;
+    state.bars    = msg.bar_count  || state.bars;
+    state.ticks   = msg.tick_count || state.ticks;
+    state.symbol  = msg.symbol || state.symbol;
+    renderAll();
+  } else if (msg.type === 'bar') {
+    state.zones   = msg.zones || state.zones;
+    state.prevCmp = state.cmp;
+    state.cmp     = msg.bar?.close || state.cmp;
+    state.bars    += 1;
+    renderZones();
+    renderLadder();
+    updateHeader();
+  } else if (msg.type === 'pivot') {
+    state.pivots.push(msg.pivot);
+    if (state.pivots.length > 30) state.pivots.shift();
+    renderPivots();
+  } else if (msg.type === 'signal') {
+    state.signals.push(msg.signal);
+    if (state.signals.length > 60) state.signals.shift();
+    state.sigCount++;
+    renderSignals();
+    flashSignal(msg.signal);
+  } else if (msg.type === 'zone_event') {
+    // zones updated via next bar message
+  }
+}
+
+// ── Render functions ──────────────────────────────────────────
+
+function renderAll() {
+  updateHeader();
+  renderZones();
+  renderLadder();
+  renderSignals();
+  renderPivots();
+}
+
+function updateHeader() {
+  const cmpEl = document.getElementById('cmp');
+  cmpEl.textContent = state.cmp > 0 ? state.cmp.toFixed(2) : '—';
+
+  const diff = state.cmp - state.prevCmp;
+  cmpEl.classList.remove('up','down');
+  if (diff > 0)      { cmpEl.classList.add('up'); }
+  else if (diff < 0) { cmpEl.classList.add('down'); }
+
+  document.getElementById('bar-count').textContent  = state.bars;
+  document.getElementById('tick-count').textContent = state.ticks;
+  document.getElementById('zone-count').textContent = state.zones.length;
+  document.getElementById('sig-count').textContent  = state.signals.length;
+  document.getElementById('symbol-label').textContent = state.symbol;
+  document.getElementById('zone-count-hdr').textContent = state.zones.length;
+  document.getElementById('sig-count-hdr').textContent  = state.signals.length;
+}
+
+function renderZones() {
+  const el  = document.getElementById('zone-list');
+  const cmp = state.cmp;
+  if (!state.zones.length) {
+    el.innerHTML = '<div class="empty">Waiting for zones…</div>';
+    return;
+  }
+
+  const res = state.zones
+    .filter(z => z.type === 'Resistance')
+    .sort((a,b) => a.price - b.price);
+
+  const sup = state.zones
+    .filter(z => z.type === 'Support')
+    .sort((a,b) => b.price - a.price);
+
+  let html = '';
+
+  html += `<div class="zone-section">`;
+  html += `<div class="zone-section-label">Resistance</div>`;
+  if (!res.length) html += '<div style="padding:4px 14px;color:var(--muted);font-size:11px">None above</div>';
+  for (const z of res) html += zoneCard(z, cmp);
+  html += `</div>`;
+
+  if (cmp > 0) {
+    html += `<div class="cmp-divider">▶ CMP ${cmp.toFixed(2)}</div>`;
+  }
+
+  html += `<div class="zone-section">`;
+  html += `<div class="zone-section-label">Support</div>`;
+  if (!sup.length) html += '<div style="padding:4px 14px;color:var(--muted);font-size:11px">None below</div>';
+  for (const z of sup) html += zoneCard(z, cmp);
+  html += `</div>`;
+
+  el.innerHTML = html;
+}
+
+function zoneCard(z, cmp) {
+  const isSup  = z.type === 'Support';
+  const cls    = isSup ? 'sup' : 'res';
+  const label  = isSup ? 'SUP' : 'RES';
+  const dist   = (z.price - cmp).toFixed(0);
+  const distStr = dist > 0 ? `+${dist}` : dist;
+
+  return `
+  <div class="zone-card ${cls}">
+    <div class="zone-row1">
+      <div>
+        <span class="zone-price">${z.price.toFixed(1)}</span>
+        <span class="dist-indicator">${distStr}pts</span>
+      </div>
+      <span class="zone-badge ${cls}">${label}</span>
+    </div>
+    <div class="zone-range">${z.lower.toFixed(0)} – ${z.upper.toFixed(0)} (${z.band_pts}pt band)</div>
+    <div class="zone-stats">
+      <div class="zone-stat"><div class="v">${z.wick_touches}</div><div class="l">Touches</div></div>
+      <div class="zone-stat"><div class="v">${z.body_rejections}</div><div class="l">Rejects</div></div>
+      <div class="zone-stat"><div class="v">${z.sessions}</div><div class="l">Sessions</div></div>
+      <div class="zone-stat"><div class="v">${z.strength.toFixed(0)}</div><div class="l">Strength</div></div>
+    </div>
+    <div class="strength-bar"><div class="strength-fill" style="width:${z.strength}%"></div></div>
+  </div>`;
+}
+
+// ── Price Ladder ─────────────────────────────────────────────
+
+function renderLadder() {
+  const container = document.getElementById('ladder');
+  const cmp = state.cmp;
+  if (!cmp || !state.zones.length) {
+    container.innerHTML = '<div class="empty" style="margin-top:60px">No zones to display</div>';
+    return;
+  }
+
+  const H = container.clientHeight || 500;
+  const allPrices = state.zones.map(z => z.price).concat([cmp]);
+  const priceMin  = Math.min(...allPrices) - 60;
+  const priceMax  = Math.max(...allPrices) + 60;
+  const range     = priceMax - priceMin;
+
+  const toY = p => H - ((p - priceMin) / range) * H;
+
+  let html = '';
+
+  // Zone bands
+  for (const z of state.zones) {
+    const isSup = z.type === 'Support';
+    const yTop  = toY(z.upper);
+    const yBot  = toY(z.lower);
+    const h     = Math.max(yBot - yTop, 4);
+    const alpha = 0.06 + (z.strength / 100) * 0.15;
+    const col   = isSup ? `rgba(38,166,154,${alpha})` : `rgba(239,83,80,${alpha})`;
+    const lc    = isSup ? '#26a69a' : '#ef5350';
+    const dist  = (z.price - cmp).toFixed(0);
+    const distStr = dist > 0 ? `+${dist}` : `${dist}`;
+
+    html += `<div class="ladder-zone" style="
+      top:${yTop}px; height:${h}px;
+      background:${col};
+      border-left:2px solid ${lc};
+      color:${lc};
+    ">
+      <span style="font-size:10px;font-weight:700">${z.price.toFixed(0)}</span>
+      <span style="margin-left:6px;color:rgba(255,255,255,0.4);font-size:9px">${distStr}pts · str=${z.strength.toFixed(0)}</span>
+    </div>`;
+  }
+
+  // CMP line
+  const cmpY = toY(cmp);
+  html += `<div class="ladder-cmp" style="top:${cmpY}px">
+    <span class="ladder-cmp-label">${cmp.toFixed(2)}</span>
+  </div>`;
+
+  // Price axis ticks
+  html += `<div class="ladder-price-axis">`;
+  const tickCount = 8;
+  for (let i = 0; i <= tickCount; i++) {
+    const p = priceMin + (range * i / tickCount);
+    html += `<div class="axis-tick">${p.toFixed(0)}</div>`;
+  }
+  html += `</div>`;
+
+  container.innerHTML = html;
+}
+
+// ── Signals ──────────────────────────────────────────────────
+
+function renderSignals() {
+  const el = document.getElementById('signal-list');
+  if (!state.signals.length) {
+    el.innerHTML = '<div class="empty">No signals yet…</div>';
+    return;
+  }
+  const sorted = [...state.signals].reverse();
+  el.innerHTML = sorted.map(signalItem).join('');
+}
+
+function signalItem(s) {
+  const actionCls = s.action.includes('CE') ? 'ce' : s.action.includes('PE') ? 'pe' : '';
+  const ts = s.session || '';
+
+  return `<div class="signal-item">
+    <div class="signal-row1">
+      <span class="signal-type-badge ${s.signal_type}">${s.signal_type.replace('_',' ')}</span>
+      <span class="signal-action ${actionCls}">${s.action}</span>
+      <span class="conf-pill ${s.confidence}">${s.confidence}</span>
+    </div>
+    <div class="signal-row2">
+      <span>@<b>${s.price?.toFixed?.(0) ?? s.price}</b></span>
+      <span>Zone <b>${s.zone_price?.toFixed?.(0) ?? s.zone_price}</b></span>
+      <span>Str <b>${s.zone_strength?.toFixed?.(0)}</b></span>
+      <span>${ts}</span>
+    </div>
+    ${s.stop_level ? `<div class="signal-row2" style="margin-top:2px">
+      <span>Stop <b>${s.stop_level.toFixed(0)}</b></span>
+      <span>Tgt <b>${s.target_level?.toFixed?.(0) || '—'}</b></span>
+      <span>C${s.confirmations}</span>
+    </div>` : ''}
+  </div>`;
+}
+
+// ── Pivots ────────────────────────────────────────────────────
+
+function renderPivots() {
+  const el = document.getElementById('pivot-list');
+  if (!state.pivots.length) {
+    el.innerHTML = '<div class="empty">No pivots yet…</div>';
+    return;
+  }
+  const sorted = [...state.pivots].reverse().slice(0, 20);
+  el.innerHTML = sorted.map(p => {
+    const isHigh = p.type === 'high';
+    const col = isHigh ? 'var(--res)' : 'var(--sup)';
+    const sym = isHigh ? '▼ PH' : '▲ PL';
+    return `<div class="pivot-item">
+      <span class="pivot-sym" style="color:${col}">${sym.split(' ')[0]}</span>
+      <span style="color:${col};font-size:10px">${sym.split(' ')[1]}</span>
+      <span class="pivot-price">${p.price?.toFixed?.(2)}</span>
+      <span style="color:var(--muted);font-size:10px">${p.session || ''}</span>
+      <span class="pivot-rev">${p.rev_pct?.toFixed?.(2)}%</span>
+    </div>`;
+  }).join('');
+}
+
+// ── Signal flash ──────────────────────────────────────────────
+
+function flashSignal(sig) {
+  const actionMap = {
+    'REJECTION_LONG': '#69ff47',
+    'REJECTION_SHORT': '#ff6b6b',
+    'BREAKOUT_LONG': '#69ff47',
+    'BREAKOUT_SHORT': '#ff6b6b',
+    'ZONE_APPROACH': '#ffd54f',
+  };
+  const color = actionMap[sig.signal_type] || '#ffffff';
+
+  // Flash the price box
+  const cmpEl = document.getElementById('cmp');
+  const origColor = cmpEl.style.textShadow;
+  cmpEl.style.textShadow = `0 0 20px ${color}`;
+  setTimeout(() => { cmpEl.style.textShadow = origColor; }, 800);
+}
+
+// ── Init ──────────────────────────────────────────────────────
+
+connect();
+
+// Resize handler for ladder
+window.addEventListener('resize', () => {
+  if (state.cmp) renderLadder();
+});
+
+// Demo mode: show static example data when no WS available
+setTimeout(() => {
+  if (state.cmp === 0) {
+    console.log('No live data — showing demo state');
+    state.cmp  = 24350;
+    state.bars = 0;
+    state.zones = [
+      { zone_id:1, price:24450, upper:24465, lower:24435, band_pts:30, type:'Resistance', strength:72, wick_touches:8, body_rejections:5, inside_bars:2, sessions:4, convergence:'Both', recency_score:85 },
+      { zone_id:2, price:24500, upper:24515, lower:24485, band_pts:30, type:'Resistance', strength:61, wick_touches:5, body_rejections:3, inside_bars:1, sessions:3, convergence:'High', recency_score:72 },
+      { zone_id:3, price:24600, upper:24615, lower:24585, band_pts:30, type:'Resistance', strength:88, wick_touches:12, body_rejections:8, inside_bars:4, sessions:6, convergence:'Both', recency_score:91 },
+      { zone_id:4, price:24280, upper:24295, lower:24265, band_pts:30, type:'Support', strength:79, wick_touches:10, body_rejections:7, inside_bars:3, sessions:5, convergence:'Both', recency_score:88 },
+      { zone_id:5, price:24200, upper:24215, lower:24185, band_pts:30, type:'Support', strength:55, wick_touches:6, body_rejections:3, inside_bars:1, sessions:3, convergence:'Low', recency_score:65 },
+      { zone_id:6, price:24100, upper:24115, lower:24085, band_pts:30, type:'Support', strength:83, wick_touches:11, body_rejections:7, inside_bars:3, sessions:5, convergence:'Both', recency_score:79 },
+    ];
+    state.signals = [
+      { signal_id:1, signal_type:'ZONE_APPROACH', action:'WATCH PE', price:24420, zone_price:24450, zone_type:'Resistance', zone_strength:72, confirmations:1, confidence:'LOW', session:'2026-05-18', stop_level:24480, target_level:24280 },
+      { signal_id:2, signal_type:'REJECTION_LONG', action:'BUY CE', price:24310, zone_price:24280, zone_type:'Support', zone_strength:79, confirmations:4, confidence:'HIGH', session:'2026-05-17', stop_level:24250, target_level:24450 },
+    ];
+    state.pivots = [
+      { type:'high', price:24498, session:'2026-05-18', rev_pct:0.312 },
+      { type:'low',  price:24271, session:'2026-05-18', rev_pct:0.287 },
+      { type:'high', price:24605, session:'2026-05-17', rev_pct:0.445 },
+    ];
+    renderAll();
+  }
+}, 2500);
+</script>
+</body>
+</html>

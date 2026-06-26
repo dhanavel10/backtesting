@@ -1,0 +1,822 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Speed Demon v6 — Live Dashboard</title>
+<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+:root{
+  --bg:#0d1117;--bg2:#161b22;--bg3:#21262d;--border:#30363d;
+  --text:#e6edf3;--muted:#8b949e;--green:#3fb950;--red:#f85149;
+  --yellow:#d29922;--blue:#58a6ff;--purple:#bc8cff;--orange:#ffa657;
+  --accent:#1f6feb;--card:#161b22;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;font-size:13px;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+
+/* ── TOP BAR ── */
+#topbar{
+  display:flex;align-items:center;gap:16px;padding:8px 16px;
+  background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0;
+}
+#price-display{font-size:28px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-0.5px;min-width:120px}
+#price-display.up{color:var(--green)}
+#price-display.down{color:var(--red)}
+#price-change{font-size:14px;font-weight:600;min-width:70px}
+#session-badge{
+  padding:3px 10px;border-radius:12px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;
+}
+.badge-prime{background:#1a3a4a;color:#58a6ff;border:1px solid #1f6feb}
+.badge-midday{background:#2a2010;color:#d29922;border:1px solid #6a4c00}
+.badge-euro{background:#2a1030;color:#bc8cff;border:1px solid #5e3c8a}
+.badge-closed{background:#1e1e1e;color:#8b949e;border:1px solid #30363d}
+#status-dot{width:8px;height:8px;border-radius:50%;background:#f85149;flex-shrink:0;transition:background .3s}
+#status-dot.live{background:var(--green);box-shadow:0 0 6px var(--green)}
+#status-label{font-size:11px;color:var(--muted)}
+.stat-group{display:flex;flex-direction:column;gap:2px;border-left:1px solid var(--border);padding-left:12px;margin-left:4px}
+.stat-label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+.stat-value{font-size:14px;font-weight:600;font-variant-numeric:tabular-nums}
+#warmup-bar{display:flex;align-items:center;gap:8px;margin-left:auto}
+#warmup-pct{font-size:11px;color:var(--muted)}
+#warmup-track{width:80px;height:4px;background:var(--bg3);border-radius:2px;overflow:hidden}
+#warmup-fill{height:100%;background:var(--blue);border-radius:2px;transition:width .4s;width:0%}
+#time-display{margin-left:auto;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+
+/* ── MAIN LAYOUT ── */
+#main{display:flex;flex:1;overflow:hidden}
+
+/* ── CHART AREA ── */
+#chart-wrap{flex:1;display:flex;flex-direction:column;overflow:hidden}
+#chart-container{flex:1;position:relative}
+#chart-container>div{position:absolute;inset:0}
+#indicator-strip{
+  height:32px;display:flex;align-items:center;gap:16px;padding:0 12px;
+  background:var(--bg2);border-top:1px solid var(--border);flex-shrink:0;font-size:11px;
+}
+.ind-chip{display:flex;gap:5px;align-items:center}
+.ind-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.ind-val{font-variant-numeric:tabular-nums;font-weight:600}
+.ind-lbl{color:var(--muted)}
+#event-feed{
+  height:100px;overflow-y:auto;background:var(--bg2);border-top:1px solid var(--border);
+  padding:6px 10px;flex-shrink:0;display:flex;flex-direction:column-reverse;
+}
+.event-row{display:flex;gap:8px;align-items:baseline;padding:2px 0;border-bottom:1px solid #21262d;font-size:11px}
+.event-row:last-child{border:none}
+.ev-time{color:var(--muted);flex-shrink:0;font-variant-numeric:tabular-nums}
+.ev-type{font-weight:700;padding:0 5px;border-radius:3px;font-size:10px;flex-shrink:0;text-transform:uppercase}
+.ev-entry{background:#0d2818;color:var(--green);border:1px solid #1a4a2a}
+.ev-exit{background:#2d1010;color:var(--red);border:1px solid #6a1a1a}
+.ev-bar{background:#12192a;color:var(--blue);border:1px solid #1f3a6a}
+.ev-sl{background:#2d1a00;color:var(--orange);border:1px solid #6a3a00}
+.ev-msg{color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ── RIGHT SIDEBAR ── */
+#sidebar{
+  width:280px;display:flex;flex-direction:column;gap:0;
+  border-left:1px solid var(--border);overflow:hidden;flex-shrink:0;background:var(--bg2);
+}
+.panel{border-bottom:1px solid var(--border);flex-shrink:0}
+.panel-header{
+  display:flex;justify-content:space-between;align-items:center;
+  padding:8px 12px;cursor:pointer;user-select:none;background:var(--bg3);
+}
+.panel-title{font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted)}
+.panel-body{padding:10px 12px}
+
+/* ── OPEN TRADE CARD ── */
+#trade-card{background:var(--bg2)}
+#no-trade{color:var(--muted);font-size:12px;text-align:center;padding:16px 0}
+#trade-info{display:none}
+.trade-dir{font-size:18px;font-weight:700;margin-bottom:4px}
+.trade-dir.long{color:var(--green)}
+.trade-dir.short{color:var(--red)}
+.pnl-live{font-size:24px;font-weight:700;font-variant-numeric:tabular-nums;margin-bottom:6px}
+.pnl-live.pos{color:var(--green)}
+.pnl-live.neg{color:var(--red)}
+.trade-rows{display:grid;grid-template-columns:1fr 1fr;gap:4px}
+.t-row{background:var(--bg3);border-radius:4px;padding:5px 7px}
+.t-lbl{font-size:10px;color:var(--muted);margin-bottom:2px}
+.t-val{font-size:12px;font-weight:600;font-variant-numeric:tabular-nums}
+#be-badge{
+  margin-top:6px;padding:3px 8px;border-radius:4px;font-size:10px;font-weight:600;
+  text-align:center;background:#0d2818;color:var(--green);border:1px solid #1a4a2a;display:none;
+}
+
+/* ── S/R ZONES ── */
+#zones-list{max-height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:4px}
+.zone-row{
+  display:flex;align-items:center;gap:6px;padding:5px 7px;
+  background:var(--bg3);border-radius:4px;border-left:3px solid;
+  cursor:pointer;transition:opacity .2s;
+}
+.zone-row:hover{opacity:.8}
+.zone-sup{border-color:var(--red)}
+.zone-res{border-color:var(--red)}
+.zone-dem{border-color:var(--green)}
+.zone-sup-u{border-color:#ff9d00}
+.zone-col{display:flex;flex-direction:column;flex:1;min-width:0}
+.zone-price{font-size:12px;font-weight:700;font-variant-numeric:tabular-nums}
+.zone-range{font-size:10px;color:var(--muted)}
+.zone-strength-bar{height:3px;border-radius:2px;background:var(--accent);margin-top:3px;transition:width .3s}
+.zone-badge{font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;flex-shrink:0;text-transform:uppercase}
+.zbg-res{background:#2d1010;color:var(--red)}
+.zbg-sup{background:#0d2818;color:var(--green)}
+.zbg-sup-u{background:#2a1500;color:#ff9d00}
+.zone-dist{font-size:10px;color:var(--muted);text-align:right;flex-shrink:0;min-width:36px}
+
+/* ── INDICATORS ── */
+#ind-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.ind-item{background:var(--bg3);border-radius:4px;padding:6px 8px}
+.ind-item-lbl{font-size:10px;color:var(--muted);margin-bottom:3px}
+.ind-item-val{font-size:14px;font-weight:600;font-variant-numeric:tabular-nums}
+#htf-row{display:flex;gap:8px;margin-top:6px}
+.htf-chip{flex:1;text-align:center;padding:4px 6px;border-radius:4px;font-size:11px;font-weight:600}
+.htf-bull{background:#0d2818;color:var(--green);border:1px solid #1a4a2a}
+.htf-bear{background:#2d1010;color:var(--red);border:1px solid #6a1a1a}
+.htf-neutral{background:var(--bg3);color:var(--muted);border:1px solid var(--border)}
+
+/* ── TRADE LOG TABLE ── */
+#log-wrap{flex:1;overflow-y:auto;min-height:0}
+#trade-table{width:100%;border-collapse:collapse;font-size:11px}
+#trade-table th{
+  position:sticky;top:0;background:var(--bg3);padding:5px 7px;
+  text-align:right;font-weight:600;color:var(--muted);text-transform:uppercase;
+  font-size:10px;border-bottom:1px solid var(--border);
+}
+#trade-table th:first-child{text-align:left}
+#trade-table td{padding:4px 7px;text-align:right;border-bottom:1px solid #21262d}
+#trade-table td:first-child{text-align:left}
+#trade-table tr:hover td{background:#1c2128}
+.td-win{color:var(--green)}
+.td-loss{color:var(--red)}
+.td-long{color:var(--green)}
+.td-short{color:var(--red)}
+
+/* ── SCROLLBARS ── */
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+
+/* ── ANIMATIONS ── */
+@keyframes flash-green{0%{background:#0d2818}50%{background:#1a4a2a}100%{background:transparent}}
+@keyframes flash-red{0%{background:#2d1010}50%{background:#6a1a1a}100%{background:transparent}}
+.flash-g{animation:flash-green .8s ease-out}
+.flash-r{animation:flash-red .8s ease-out}
+</style>
+</head>
+<body>
+
+<!-- ── TOP BAR ─────────────────────────────────── -->
+<div id="topbar">
+  <div id="status-dot"></div>
+  <span id="status-label">Connecting…</span>
+
+  <div id="price-display">——</div>
+  <div id="price-change" style="color:var(--muted)">——</div>
+  <span id="session-badge" class="badge-closed">Closed</span>
+
+  <div class="stat-group">
+    <div class="stat-label">Equity</div>
+    <div class="stat-value" id="stat-equity" style="color:var(--blue)">—</div>
+  </div>
+  <div class="stat-group">
+    <div class="stat-label">Day P&amp;L</div>
+    <div class="stat-value" id="stat-daypnl">—</div>
+  </div>
+  <div class="stat-group">
+    <div class="stat-label">W / L</div>
+    <div class="stat-value" id="stat-wl">— / —</div>
+  </div>
+  <div class="stat-group">
+    <div class="stat-label">Trades</div>
+    <div class="stat-value" id="stat-trades">—</div>
+  </div>
+  <div class="stat-group">
+    <div class="stat-label">Gates</div>
+    <div class="stat-value" id="stat-gates" style="color:var(--muted)">—</div>
+  </div>
+
+  <div id="warmup-bar">
+    <div id="warmup-track"><div id="warmup-fill"></div></div>
+    <span id="warmup-pct">Warming up…</span>
+  </div>
+  <div id="time-display">—</div>
+</div>
+
+<!-- ── MAIN ─────────────────────────────────────── -->
+<div id="main">
+
+  <!-- Chart + event feed -->
+  <div id="chart-wrap">
+    <div id="chart-container"></div>
+
+    <!-- Indicator strip below chart -->
+    <div id="indicator-strip">
+      <div class="ind-chip">
+        <div class="ind-dot" style="background:#f0c040"></div>
+        <span class="ind-lbl">EMA9</span>
+        <span class="ind-val" id="ic-ema9">—</span>
+      </div>
+      <div class="ind-chip">
+        <div class="ind-dot" style="background:#5588ff"></div>
+        <span class="ind-lbl">EMA21</span>
+        <span class="ind-val" id="ic-ema21">—</span>
+      </div>
+      <div class="ind-chip">
+        <div class="ind-dot" style="background:#cc44cc"></div>
+        <span class="ind-lbl">EMA50</span>
+        <span class="ind-val" id="ic-ema50">—</span>
+      </div>
+      <div class="ind-chip" style="margin-left:12px">
+        <span class="ind-lbl">ATR</span>
+        <span class="ind-val" id="ic-atr">—</span>
+      </div>
+      <div class="ind-chip">
+        <span class="ind-lbl">ADX</span>
+        <span class="ind-val" id="ic-adx">—</span>
+      </div>
+      <div class="ind-chip">
+        <span class="ind-lbl">Slope</span>
+        <span class="ind-val" id="ic-slope">—</span>
+      </div>
+      <div class="ind-chip" style="margin-left:auto">
+        <span class="ind-lbl">Bar</span>
+        <span class="ind-val" id="ic-bar">—</span>
+      </div>
+    </div>
+
+    <!-- Event feed -->
+    <div id="event-feed"></div>
+  </div>
+
+  <!-- Right sidebar -->
+  <div id="sidebar">
+
+    <!-- Open Trade -->
+    <div class="panel" id="trade-card">
+      <div class="panel-header">
+        <span class="panel-title">Open Trade</span>
+        <span id="trade-path" style="font-size:10px;color:var(--muted)"></span>
+      </div>
+      <div class="panel-body">
+        <div id="no-trade">No open position</div>
+        <div id="trade-info">
+          <div id="trade-dir" class="trade-dir long">LONG</div>
+          <div id="pnl-live" class="pnl-live pos">+0.00</div>
+          <div class="trade-rows">
+            <div class="t-row"><div class="t-lbl">Entry</div><div class="t-val" id="t-entry">—</div></div>
+            <div class="t-row"><div class="t-lbl">Current</div><div class="t-val" id="t-curr">—</div></div>
+            <div class="t-row"><div class="t-lbl">Stop Loss</div><div class="t-val" id="t-sl" style="color:var(--red)">—</div></div>
+            <div class="t-row"><div class="t-lbl">Target</div><div class="t-val" id="t-tp" style="color:var(--green)">—</div></div>
+            <div class="t-row"><div class="t-lbl">Bars Held</div><div class="t-val" id="t-bars">—</div></div>
+            <div class="t-row"><div class="t-lbl">Entry Time</div><div class="t-val" id="t-time" style="font-size:10px">—</div></div>
+          </div>
+          <div id="be-badge">Break-even active</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- S/R Zones -->
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">S/R Zones</span>
+        <span id="zones-count" style="font-size:10px;color:var(--muted)">0 zones</span>
+      </div>
+      <div class="panel-body" style="padding:6px 8px">
+        <div id="zones-list"><div style="color:var(--muted);font-size:12px;text-align:center;padding:12px">No zone data yet</div></div>
+      </div>
+    </div>
+
+    <!-- Indicators -->
+    <div class="panel">
+      <div class="panel-header"><span class="panel-title">Indicators</span></div>
+      <div class="panel-body">
+        <div id="ind-grid">
+          <div class="ind-item"><div class="ind-item-lbl">EMA 9</div><div class="ind-item-val" id="ii-ema9">—</div></div>
+          <div class="ind-item"><div class="ind-item-lbl">EMA 21</div><div class="ind-item-val" id="ii-ema21">—</div></div>
+          <div class="ind-item"><div class="ind-item-lbl">EMA 50</div><div class="ind-item-val" id="ii-ema50">—</div></div>
+          <div class="ind-item"><div class="ind-item-lbl">ATR</div><div class="ind-item-val" id="ii-atr">—</div></div>
+          <div class="ind-item"><div class="ind-item-lbl">ADX</div><div class="ind-item-val" id="ii-adx">—</div></div>
+          <div class="ind-item"><div class="ind-item-lbl">Slope</div><div class="ind-item-val" id="ii-slope">—</div></div>
+        </div>
+        <div id="htf-row">
+          <div class="htf-chip htf-neutral" id="htf-long">HTF Long: —</div>
+          <div class="htf-chip htf-neutral" id="htf-short">HTF Short: —</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Trade Log -->
+    <div class="panel" style="flex:1;overflow:hidden;display:flex;flex-direction:column;border-bottom:none">
+      <div class="panel-header"><span class="panel-title">Trade Log</span></div>
+      <div id="log-wrap">
+        <table id="trade-table">
+          <thead>
+            <tr>
+              <th>Time</th><th>Dir</th><th>Entry</th><th>Exit</th><th>P&amp;L</th><th>Reason</th>
+            </tr>
+          </thead>
+          <tbody id="trade-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+  </div><!-- /sidebar -->
+</div><!-- /main -->
+
+<script>
+// ══════════════════════════════════════════════════════════
+// CONFIG
+// ══════════════════════════════════════════════════════════
+const WS_URL  = 'ws://localhost:8089';
+const IST_OFF = 19800;      // UTC+5:30 in seconds
+const RECONNECT_MS = 3000;
+
+// ══════════════════════════════════════════════════════════
+// STATE
+// ══════════════════════════════════════════════════════════
+let chart, candleSeries, ema9Series, ema21Series, ema50Series;
+let slLine=null, tpLine=null, entryLine=null;
+const zoneLines = new Map();   // zoneKey → {upper, lower, mid} priceline refs
+let lastPrice = null, prevClosePrice = null;
+let totalDayPnl = 0, dayStartEquity = null;
+let lastEquity = null;
+let wsConn = null;
+let isLive = false;
+
+// ══════════════════════════════════════════════════════════
+// CHART INIT
+// ══════════════════════════════════════════════════════════
+function initChart() {
+  const container = document.getElementById('chart-container');
+  chart = LightweightCharts.createChart(container, {
+    layout: {
+      background: { type: 'solid', color: '#0d1117' },
+      textColor: '#8b949e',
+      fontFamily: "'Segoe UI', system-ui, sans-serif",
+    },
+    grid: {
+      vertLines: { color: '#21262d' },
+      horzLines: { color: '#21262d' },
+    },
+    crosshair: {
+      mode: LightweightCharts.CrosshairMode.Normal,
+      vertLine: { color: '#444c56', width: 1, style: 2, labelBackgroundColor: '#21262d' },
+      horzLine: { color: '#444c56', width: 1, style: 2, labelBackgroundColor: '#21262d' },
+    },
+    rightPriceScale: {
+      borderColor: '#30363d',
+      textColor: '#8b949e',
+    },
+    timeScale: {
+      borderColor: '#30363d',
+      timeVisible: true,
+      secondsVisible: false,
+      tickMarkFormatter: (t) => {
+        const d = new Date((t + IST_OFF) * 1000);
+        const h = d.getUTCHours().toString().padStart(2,'0');
+        const m = d.getUTCMinutes().toString().padStart(2,'0');
+        return `${h}:${m}`;
+      },
+    },
+    localization: {
+      timeFormatter: (t) => {
+        const d = new Date((t + IST_OFF) * 1000);
+        return d.toUTCString().slice(0,16).replace('GMT','') + ` ${d.getUTCHours().toString().padStart(2,'0')}:${d.getUTCMinutes().toString().padStart(2,'0')} IST`;
+      },
+      priceFormatter: p => p.toFixed(2),
+    },
+  });
+
+  candleSeries = chart.addCandlestickSeries({
+    upColor: '#3fb950', downColor: '#f85149',
+    borderUpColor: '#3fb950', borderDownColor: '#f85149',
+    wickUpColor: '#3fb950', wickDownColor: '#f85149',
+  });
+
+  ema9Series  = chart.addLineSeries({ color:'#f0c040', lineWidth:1, title:'EMA9',  priceLineVisible:false, lastValueVisible:false });
+  ema21Series = chart.addLineSeries({ color:'#5588ff', lineWidth:1, title:'EMA21', priceLineVisible:false, lastValueVisible:false });
+  ema50Series = chart.addLineSeries({ color:'#cc44cc', lineWidth:2, title:'EMA50', priceLineVisible:false, lastValueVisible:false });
+
+  window.addEventListener('resize', () => {
+    chart.applyOptions({ width: container.offsetWidth, height: container.offsetHeight });
+  });
+}
+
+// ══════════════════════════════════════════════════════════
+// HELPERS
+// ══════════════════════════════════════════════════════════
+const fmt = (v, d=2) => v==null ? '—' : Number(v).toFixed(d);
+const fmtTime = (unix) => {
+  if (!unix) return '—';
+  const d = new Date((unix + IST_OFF) * 1000);
+  return `${d.getUTCHours().toString().padStart(2,'0')}:${d.getUTCMinutes().toString().padStart(2,'0')}`;
+};
+const fmtDate = (unix) => {
+  if (!unix) return '—';
+  const d = new Date((unix + IST_OFF) * 1000);
+  return `${d.getUTCDate().toString().padStart(2,'0')}/${(d.getUTCMonth()+1).toString().padStart(2,'0')} ${d.getUTCHours().toString().padStart(2,'0')}:${d.getUTCMinutes().toString().padStart(2,'0')}`;
+};
+const fmtIST = (unix) => {
+  const d = new Date((unix + IST_OFF) * 1000);
+  return d.toUTCString().replace('GMT','').trim();
+};
+
+function setEl(id, val) { const e=document.getElementById(id); if(e) e.textContent=val; }
+function setClass(id, cls) { const e=document.getElementById(id); if(e){e.className=''; e.className=cls;} }
+
+// ══════════════════════════════════════════════════════════
+// PRICE LINE MANAGEMENT
+// ══════════════════════════════════════════════════════════
+function removePriceLine(ref) {
+  if (ref) try { candleSeries.removePriceLine(ref); } catch(e){}
+  return null;
+}
+function addPriceLine(price, color, title, dash=false) {
+  return candleSeries.createPriceLine({
+    price, color, lineWidth: 1,
+    lineStyle: dash ? LightweightCharts.LineStyle.Dashed : LightweightCharts.LineStyle.Solid,
+    axisLabelVisible: true, title,
+  });
+}
+
+// ══════════════════════════════════════════════════════════
+// ZONE PRICE LINES
+// ══════════════════════════════════════════════════════════
+function updateZoneLines(zones, currentPrice) {
+  // Clear old zone lines not in new zones
+  const newKeys = new Set(zones.map(z => `${z.price.toFixed(1)}-${z.type}`));
+  for (const [k, refs] of zoneLines) {
+    if (!newKeys.has(k)) {
+      refs.forEach(r => removePriceLine(r));
+      zoneLines.delete(k);
+    }
+  }
+  // Add new zone lines
+  zones.forEach(z => {
+    const k = `${z.price.toFixed(1)}-${z.type}`;
+    if (zoneLines.has(k)) return;
+    const isRes = z.type==='resistance' || z.type==='supply';
+    const col = isRes ? '#f8514966' : '#3fb95066';
+    const refs = [
+      addPriceLine(z.upper, col, '', true),
+      addPriceLine(z.lower, col, '', true),
+      addPriceLine(z.price, isRes ? '#f85149aa' : '#3fb950aa', z.type.toUpperCase().slice(0,3)),
+    ];
+    zoneLines.set(k, refs);
+  });
+}
+
+function clearTradeLines() {
+  slLine    = removePriceLine(slLine);
+  tpLine    = removePriceLine(tpLine);
+  entryLine = removePriceLine(entryLine);
+}
+
+function setTradeLines(trade) {
+  clearTradeLines();
+  if (!trade) return;
+  const isLong = trade.direction === 'long';
+  entryLine = addPriceLine(trade.entry_price, '#ffffff88', 'ENTRY');
+  slLine    = addPriceLine(trade.stop_loss,   '#f85149',   'SL');
+  if (trade.tp)
+    tpLine  = addPriceLine(trade.tp, '#3fb950', 'TP');
+}
+
+// ══════════════════════════════════════════════════════════
+// CHART DATA UPDATE
+// ══════════════════════════════════════════════════════════
+function updateCandles(candles, barInds) {
+  if (!candles || !candles.length) return;
+  // Payload keys: t, o, h, l, c, ef, es, em (EMAs embedded per candle)
+  const ohlcv = candles.map(c => ({ time:c.t, open:c.o, high:c.h, low:c.l, close:c.c }));
+  const ef9  = candles.filter(c => c.ef != null).map(c => ({time:c.t, value:c.ef}));
+  const ef21 = candles.filter(c => c.es != null).map(c => ({time:c.t, value:c.es}));
+  const ef50 = candles.filter(c => c.em != null).map(c => ({time:c.t, value:c.em}));
+  candleSeries.setData(ohlcv);
+  ema9Series.setData(ef9);
+  ema21Series.setData(ef21);
+  ema50Series.setData(ef50);
+}
+
+// ══════════════════════════════════════════════════════════
+// MARKERS (entry / exit)
+// ══════════════════════════════════════════════════════════
+let markers = [];
+function addMarker(time, dir, kind, price) {
+  const isEntry = kind==='entry';
+  const isLong  = dir==='long';
+  markers.push({
+    time,
+    position: (isLong && isEntry) || (!isLong && !isEntry) ? 'belowBar' : 'aboveBar',
+    color:    isEntry ? (isLong ? '#3fb950' : '#f85149') : (isLong ? '#ffa657' : '#bc8cff'),
+    shape:    isEntry ? (isLong ? 'arrowUp' : 'arrowDown') : 'circle',
+    text:     isEntry ? `${dir.toUpperCase()} IN ${fmt(price)}` : `OUT ${fmt(price)}`,
+    size: 1,
+  });
+  // Keep sorted by time
+  markers.sort((a,b) => a.time - b.time);
+  candleSeries.setMarkers(markers);
+}
+
+// ══════════════════════════════════════════════════════════
+// SIDEBAR ZONES
+// ══════════════════════════════════════════════════════════
+function renderZonesSidebar(zones, price) {
+  const el = document.getElementById('zones-list');
+  document.getElementById('zones-count').textContent = `${zones.length} zone${zones.length!==1?'s':''}`;
+  if (!zones.length) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:12px;text-align:center;padding:12px">No zones</div>';
+    return;
+  }
+  const sorted = [...zones].sort((a,b) => Math.abs(a.price-price) - Math.abs(b.price-price));
+  el.innerHTML = sorted.map(z => {
+    const isRes = z.type==='resistance'||z.type==='supply';
+    const cls = isRes ? 'zone-res' : 'zone-dem';
+    const bcls = isRes ? 'zbg-res' : 'zbg-sup';
+    const dist = price ? Math.abs(z.price - price).toFixed(1) : '—';
+    const pct = Math.min(100, Math.round(z.strength * 20));
+    return `<div class="zone-row ${cls}" onclick="jumpToZone(${z.price})">
+      <div class="zone-col">
+        <div class="zone-price">${z.price.toFixed(1)}</div>
+        <div class="zone-range">${z.lower.toFixed(1)} – ${z.upper.toFixed(1)}</div>
+        <div class="zone-strength-bar" style="width:${pct}%"></div>
+      </div>
+      <span class="zone-badge ${bcls}">${z.type.slice(0,3).toUpperCase()}</span>
+      <div class="zone-dist">±${dist}</div>
+    </div>`;
+  }).join('');
+}
+
+function jumpToZone(price) {
+  // No-op; chart auto-adjusts, but could set crosshair here
+}
+
+// ══════════════════════════════════════════════════════════
+// OPEN TRADE CARD
+// ══════════════════════════════════════════════════════════
+function renderTrade(trade, price) {
+  const noTrade = document.getElementById('no-trade');
+  const info    = document.getElementById('trade-info');
+  if (!trade) {
+    noTrade.style.display = '';
+    info.style.display    = 'none';
+    return;
+  }
+  noTrade.style.display = 'none';
+  info.style.display    = '';
+  const isLong = trade.direction === 'long';
+  const dir = document.getElementById('trade-dir');
+  dir.textContent = isLong ? 'LONG' : 'SHORT';
+  dir.className   = 'trade-dir ' + (isLong ? 'long' : 'short');
+  const pnl = trade.pnl_current ?? 0;
+  const pnlEl = document.getElementById('pnl-live');
+  pnlEl.textContent = (pnl>=0?'+':'')+pnl.toFixed(2);
+  pnlEl.className = 'pnl-live ' + (pnl>=0?'pos':'neg');
+  setEl('t-entry', fmt(trade.entry_price));
+  setEl('t-curr',  fmt(price ?? trade.entry_price));
+  setEl('t-sl',    fmt(trade.stop_loss));
+  setEl('t-tp',    fmt(trade.tp));
+  setEl('t-bars',  trade.bars_held ?? '—');
+  setEl('t-time',  fmtTime(trade.entry_unix));
+  const be = document.getElementById('be-badge');
+  be.style.display = trade.be_triggered ? '' : 'none';
+  document.getElementById('trade-path').textContent = trade.path ? `Path ${trade.path}` : '';
+}
+
+// ══════════════════════════════════════════════════════════
+// INDICATORS SIDEBAR
+// ══════════════════════════════════════════════════════════
+function renderIndicators(ind) {
+  if (!ind) return;
+  setEl('ii-ema9',  fmt(ind.ema_fast));
+  setEl('ii-ema21', fmt(ind.ema_slow));
+  setEl('ii-ema50', fmt(ind.ema_macro));
+  setEl('ii-atr',   fmt(ind.atr));
+  setEl('ii-adx',   fmt(ind.adx, 1));
+  setEl('ii-slope', fmt(ind.slope, 4));
+  setEl('ic-ema9',  fmt(ind.ema_fast));
+  setEl('ic-ema21', fmt(ind.ema_slow));
+  setEl('ic-ema50', fmt(ind.ema_macro));
+  setEl('ic-atr',   fmt(ind.atr));
+  setEl('ic-adx',   fmt(ind.adx, 1));
+  setEl('ic-slope', fmt(ind.slope, 4));
+  const htfL = document.getElementById('htf-long');
+  const htfS = document.getElementById('htf-short');
+  if (ind.htf_long  != null) { htfL.textContent=`HTF Long: ${ind.htf_long?'✓':'✗'}`; htfL.className='htf-chip '+(ind.htf_long?'htf-bull':'htf-neutral'); }
+  if (ind.htf_short != null) { htfS.textContent=`HTF Short: ${ind.htf_short?'✓':'✗'}`; htfS.className='htf-chip '+(ind.htf_short?'htf-bear':'htf-neutral'); }
+}
+
+// ══════════════════════════════════════════════════════════
+// TRADE LOG TABLE
+// ══════════════════════════════════════════════════════════
+const tradesSeen = new Set();
+function renderTradeLog(trades) {
+  if (!trades || !trades.length) return;
+  const tbody = document.getElementById('trade-tbody');
+  const fresh = trades.filter(t => !tradesSeen.has(t.entry_unix+'_'+t.exit_unix));
+  if (!fresh.length) return;
+  fresh.forEach(t => {
+    tradesSeen.add(t.entry_unix+'_'+t.exit_unix);
+    const isWin = t.pnl >= 0;
+    const isLong = t.direction === 'long';
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${fmtTime(t.entry_unix)}</td>
+      <td class="${isLong?'td-long':'td-short'}">${isLong?'▲L':'▼S'}</td>
+      <td>${fmt(t.entry_price)}</td>
+      <td>${fmt(t.exit_price)}</td>
+      <td class="${isWin?'td-win':'td-loss'}">${(t.pnl>=0?'+':'')}${fmt(t.pnl)}</td>
+      <td style="font-size:10px;color:var(--muted)">${(t.exit_reason||'').slice(0,8)}</td>`;
+    tbody.prepend(tr);
+    tr.classList.add(isWin?'flash-g':'flash-r');
+  });
+}
+
+// ══════════════════════════════════════════════════════════
+// EVENT FEED
+// ══════════════════════════════════════════════════════════
+function addEvent(type, msg, ts) {
+  const feed = document.getElementById('event-feed');
+  const row  = document.createElement('div');
+  row.className = 'event-row';
+  const typeMap = {
+    TRADE_ENTRY:'ev-entry',TRADE_EXIT:'ev-exit',
+    BAR_CLOSE:'ev-bar',TRADE_SL:'ev-sl',TICK:'ev-bar'
+  };
+  row.innerHTML = `
+    <span class="ev-time">${fmtTime(ts)}</span>
+    <span class="ev-type ${typeMap[type]||'ev-bar'}">${type.replace('TRADE_','')}</span>
+    <span class="ev-msg">${msg}</span>`;
+  feed.prepend(row);
+  // Cap at 50 events
+  while (feed.children.length > 50) feed.removeChild(feed.lastChild);
+}
+
+// ══════════════════════════════════════════════════════════
+// TOPBAR UPDATE
+// ══════════════════════════════════════════════════════════
+function updateTopbar(d) {
+  const price = d.price;
+  const pd = document.getElementById('price-display');
+  if (lastPrice != null) {
+    pd.className = 'price-display ' + (price >= lastPrice ? 'up' : 'down');
+  }
+  pd.textContent = fmt(price);
+
+  // Day P&L vs open-of-day equity
+  if (dayStartEquity === null && d.equity != null) dayStartEquity = d.equity;
+  if (d.equity != null) {
+    const dpnl = d.equity - (dayStartEquity ?? d.equity);
+    const dpEl = document.getElementById('stat-daypnl');
+    dpEl.textContent = (dpnl>=0?'+':'')+dpnl.toFixed(2);
+    dpEl.style.color = dpnl>=0 ? 'var(--green)' : 'var(--red)';
+    lastEquity = d.equity;
+  }
+  setEl('stat-equity', d.equity != null ? d.equity.toFixed(2) : '—');
+  setEl('stat-wl', `${d.wins??0} / ${d.losses??0}`);
+  setEl('stat-trades', d.daily_trades ?? '—');
+  setEl('ic-bar', d.bar_count ?? '—');
+
+  // Gate counts summary
+  if (d.gate_counts) {
+    const total = Object.values(d.gate_counts).reduce((a,b)=>a+b,0);
+    setEl('stat-gates', total ? `${total} blk` : '0');
+  }
+
+  // Warmup
+  const wf = document.getElementById('warmup-fill');
+  const wp = document.getElementById('warmup-pct');
+  if (d.warming_up) {
+    const pct = Math.min(100, Math.round((d.bar_count / (d.bar_count + (d.bars_to_live??1))) * 100));
+    wf.style.width = pct + '%';
+    wp.textContent = `Warming up… ${d.bar_count}/${d.bar_count+(d.bars_to_live??0)} bars`;
+    wp.style.color = 'var(--yellow)';
+  } else {
+    wf.style.width = '100%';
+    wp.textContent = 'Live signals active';
+    wp.style.color = 'var(--green)';
+    wf.style.background = 'var(--green)';
+  }
+
+  // Session badge
+  const sb = document.getElementById('session-badge');
+  const sess = d.session || 'closed';
+  const cls = {prime:'badge-prime',midday:'badge-midday',euro:'badge-euro',closed:'badge-closed'};
+  sb.className = 'session-badge ' + (cls[sess]||'badge-closed');
+  sb.textContent = sess.charAt(0).toUpperCase()+sess.slice(1);
+
+  lastPrice = price;
+}
+
+// ══════════════════════════════════════════════════════════
+// CLOCK
+// ══════════════════════════════════════════════════════════
+setInterval(() => {
+  const now = new Date();
+  const ist = new Date(now.getTime() + IST_OFF*1000);
+  const ts  = ist.toUTCString().replace('GMT','').trim().slice(0,20);
+  setEl('time-display', ts + ' IST');
+}, 1000);
+
+// ══════════════════════════════════════════════════════════
+// FULL STATE MESSAGE HANDLER
+// ══════════════════════════════════════════════════════════
+function handleFullState(d) {
+  updateTopbar(d);
+  if (d.candles && d.candles.length) {
+    updateCandles(d.candles, d.bar_indicators || []);
+    chart.timeScale().scrollToRealTime();
+  }
+  renderZonesSidebar(d.zones || [], d.price);
+  updateZoneLines(d.zones || [], d.price);
+  renderTrade(d.open_trade, d.price);
+  setTradeLines(d.open_trade);
+  renderIndicators(d.indicators);
+  renderTradeLog(d.closed_trades || []);
+
+  // Build event message
+  const t = d.trigger;
+  const lastC = d.candles?.at(-1);
+  if (t === 'TRADE_ENTRY' && d.open_trade) {
+    const tr = d.open_trade;
+    addEvent(t, `${tr.direction.toUpperCase()} @ ${fmt(tr.entry_price)}  SL:${fmt(tr.stop_loss)}  TP:${fmt(tr.tp)}  [Path ${tr.path}]`, d.ts_unix);
+    if (lastC) addMarker(lastC.t, tr.direction, 'entry', tr.entry_price);
+  } else if (t === 'TRADE_EXIT' && d.closed_trades?.length) {
+    const rec = d.closed_trades[0];
+    addEvent(t, `${rec.direction.toUpperCase()} OUT @ ${fmt(rec.exit_price)}  PnL: ${(rec.pnl>=0?'+':'')+fmt(rec.pnl)}  [${rec.exit_reason||''}]`, d.ts_unix);
+    if (lastC) addMarker(lastC.t, rec.direction, 'exit', rec.exit_price);
+  } else if (t === 'BAR_CLOSE') {
+    addEvent(t, `Bar #${d.bar_count}  O:${lastC?.o?.toFixed(1)} H:${lastC?.h?.toFixed(1)} L:${lastC?.l?.toFixed(1)} C:${d.price?.toFixed(1)}`, d.ts_unix);
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+// TICK MESSAGE (intrabar)
+// ══════════════════════════════════════════════════════════
+function handleTick(d) {
+  const price = d.price;
+  const pd = document.getElementById('price-display');
+  pd.className = lastPrice != null ? (price>=lastPrice?'up':'down') : '';
+  pd.textContent = fmt(price);
+  lastPrice = price;
+
+  if (d.open_pnl != null) {
+    const pnlEl = document.getElementById('pnl-live');
+    pnlEl.textContent = (d.open_pnl>=0?'+':'')+d.open_pnl.toFixed(2);
+    pnlEl.className = 'pnl-live ' + (d.open_pnl>=0?'pos':'neg');
+    setEl('t-curr', fmt(price));
+  }
+  if (d.stop_loss != null) setEl('t-sl', fmt(d.stop_loss));
+}
+
+// ══════════════════════════════════════════════════════════
+// WEBSOCKET
+// ══════════════════════════════════════════════════════════
+function connect() {
+  const dot   = document.getElementById('status-dot');
+  const label = document.getElementById('status-label');
+  dot.className   = '';
+  label.textContent = 'Connecting…';
+
+  wsConn = new WebSocket(WS_URL);
+
+  wsConn.onopen = () => {
+    isLive = true;
+    dot.className   = 'live';
+    label.textContent = 'Connected';
+    addEvent('BAR_CLOSE', 'Dashboard connected to live_trader.py', Date.now()/1000);
+  };
+
+  wsConn.onmessage = (evt) => {
+    let d;
+    try { d = JSON.parse(evt.data); } catch(e) { return; }
+    if (d.trigger === 'TICK') {
+      handleTick(d);
+    } else {
+      handleFullState(d);
+    }
+  };
+
+  wsConn.onclose = () => {
+    isLive = false;
+    dot.className   = '';
+    label.textContent = `Disconnected — reconnecting in ${RECONNECT_MS/1000}s…`;
+    setTimeout(connect, RECONNECT_MS);
+  };
+
+  wsConn.onerror = () => {
+    wsConn.close();
+  };
+}
+
+// ══════════════════════════════════════════════════════════
+// BOOT
+// ══════════════════════════════════════════════════════════
+initChart();
+connect();
+</script>
+</body>
+</html>

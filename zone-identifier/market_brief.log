@@ -1,0 +1,50 @@
+2026-05-28 19:44:56,631 [INFO] US market fetched: S&P 500 = 7548.50 (+0.37%)
+2026-05-28 19:44:56,905 [INFO] US market fetched: NASDAQ = 26786.84 (+0.42%)
+2026-05-28 19:44:57,176 [INFO] US market fetched: Dow Jones = 50682.92 (+0.08%)
+2026-05-28 19:44:57,454 [INFO] US market fetched: US VIX = 16.18 (-0.68%)
+2026-05-28 19:44:58,304 [INFO] US market fetched: Russell 2000 = 2900.89 (-0.65%)
+2026-05-28 19:45:00,422 [ERROR] $NIFTY50.NS: possibly delisted; no price data found  (period=2d)
+2026-05-28 19:45:08,570 [INFO] FII/DII data fetched: 4 records
+2026-05-28 19:45:20,677 [INFO] Economic calendar: 0 high-impact events found
+2026-05-29 17:28:47,751 [INFO] Warming up NSE session (fetching cookies)…
+2026-05-29 17:28:48,624 [WARNING] NSE warm-up failed: HTTPSConnectionPool(host='www.nseindia.com', port=443): Max retries exceeded with url: / (Caused by SSLError(SSLError(1, '[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1032)')))
+2026-05-29 17:28:49,563 [WARNING] NSE attempt 1/3 failed for https://www.nseindia.com/api/marketStatus: HTTPSConnectionPool(host='www.nseindia.com', port=443): Max retries exceeded with url: /api/marketStatus (Caused by SSLError(SSLError(1, '[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1032)')))
+2026-05-29 17:28:53,230 [WARNING] NSE attempt 2/3 failed for https://www.nseindia.com/api/marketStatus: HTTPSConnectionPool(host='www.nseindia.com', port=443): Max retries exceeded with url: /api/marketStatus (Caused by SSLError(SSLError(1, '[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1032)')))
+2026-05-29 17:28:59,889 [WARNING] NSE attempt 3/3 failed for https://www.nseindia.com/api/marketStatus: HTTPSConnectionPool(host='www.nseindia.com', port=443): Max retries exceeded with url: /api/marketStatus (Caused by SSLError(SSLError(1, '[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1032)')))
+2026-05-29 17:28:59,890 [INFO] Warming up NSE session (fetching cookies)…
+2026-05-29 17:29:00,533 [WARNING] NSE warm-up failed: HTTPSConnectionPool(host='www.nseindia.com', port=443): Max retries exceeded with url: / (Caused by SSLError(SSLError(1, '[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1032)')))
+2026-05-29 17:29:01,161 [WARNING] NSE attempt 1/3 failed for https://www.nseindia.com/api/equity-stockIndices?index=INDIA%20VIX: HTTPSConnectionPool(host='www.nseindia.com', port=443): Max retries exceeded with url: /api/equity-stockIndices?index=INDIA%20VIX (Caused by SSLError(SSLError(1, '[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1032)')))
+2026-05-29 17:29:04,806 [WARNING] NSE attempt 2/3 failed for https://www.nseindia.com/api/equity-stockIndices?index=INDIA%20VIX: HTTPSConnectionPool(host='www.nseindia.com', port=443): Max retries exceeded with url: /api/equity-stockIndices?index=INDIA%20VIX (Caused by SSLError(SSLError(1, '[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1032)')))
+2026-05-29 17:29:11,420 [WARNING] NSE attempt 3/3 failed for https://www.nseindia.com/api/equity-stockIndices?index=INDIA%20VIX: HTTPSConnectionPool(host='www.nseindia.com', port=443): Max retries exceeded with url: /api/equity-stockIndices?index=INDIA%20VIX (Caused by SSLError(SSLError(1, '[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1032)')))
+2026-05-29 17:29:11,421 [INFO] Warming up NSE session (fetching cookies)…
+2026-05-29 17:29:12,050 [WARNING] NSE warm-up failed: HTTPSConnectionPool(host='www.nseindia.com', port=443): Max retries exceeded with url: / (Caused by SSLError(SSLError(1, '[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1032)')))
+2026-05-29 17:29:12,697 [WARNING] NSE attempt 1/3 failed for https://www.nseindia.com/api/allIndices: HTTPSConnectionPool(host='www.nseindia.com', port=443): Max retries exceeded with url: /api/allIndices (Caused by SSLError(SSLError(1, '[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1032)')))
+2026-05-29 17:29:16,378 [WARNING] NSE attempt 2/3 failed for https://www.nseindia.com/api/allIndices: HTTPSConnectionPool(host='www.nseindia.com', port=443): Max retries exceeded with url: /api/allIndices (Caused by SSLError(SSLError(1, '[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1032)')))
+2026-05-29 17:29:23,371 [WARNING] NSE attempt 3/3 failed for https://www.nseindia.com/api/allIndices: HTTPSConnectionPool(host='www.nseindia.com', port=443): Max retries exceeded with url: /api/allIndices (Caused by SSLError(SSLError(1, '[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1032)')))
+2026-05-29 17:29:23,373 [INFO] Warming up NSE session (fetching cookies)…
+2026-05-29 17:29:24,491 [WARNING] NSE warm-up failed: HTTPSConnectionPool(host='www.nseindia.com', port=443): Max retries exceeded with url: / (Caused by SSLError(SSLError(1, '[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1032)')))
+2026-05-29 17:29:25,623 [WARNING] NSE attempt 1/3 failed for https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050: HTTPSConnectionPool(host='www.nseindia.com', port=443): Max retries exceeded with url: /api/equity-stockIndices?index=NIFTY%2050 (Caused by SSLError(SSLError(1, '[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1032)')))
+2026-05-29 17:29:29,698 [WARNING] NSE attempt 2/3 failed for https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050: HTTPSConnectionPool(host='www.nseindia.com', port=443): Max retries exceeded with url: /api/equity-stockIndices?index=NIFTY%2050 (Caused by SSLError(SSLError(1, '[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1032)')))
+2026-05-29 17:29:36,345 [WARNING] NSE attempt 3/3 failed for https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050: HTTPSConnectionPool(host='www.nseindia.com', port=443): Max retries exceeded with url: /api/equity-stockIndices?index=NIFTY%2050 (Caused by SSLError(SSLError(1, '[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1032)')))
+2026-05-29 17:29:36,346 [INFO] Warming up NSE session (fetching cookies)…
+2026-05-29 17:29:37,061 [WARNING] NSE warm-up failed: HTTPSConnectionPool(host='www.nseindia.com', port=443): Max retries exceeded with url: / (Caused by SSLError(SSLError(1, '[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1032)')))
+2026-05-29 17:29:37,785 [WARNING] NSE attempt 1/3 failed for https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20BANK: HTTPSConnectionPool(host='www.nseindia.com', port=443): Max retries exceeded with url: /api/equity-stockIndices?index=NIFTY%20BANK (Caused by SSLError(SSLError(1, '[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1032)')))
+2026-05-29 17:34:57,207 [INFO] NSE warm-up: hitting homepageâ€¦
+2026-05-29 17:34:57,293 [WARNING] NSE warm-up (homepage) failed: HTTPSConnectionPool(host='www.nseindia.com', port=443): Max retries exceeded with url: / (Caused by SSLError(SSLError(1, '[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1032)')))
+2026-05-29 17:34:57,294 [INFO] NSE warm-up: hitting market pageâ€¦
+2026-05-29 17:34:57,325 [WARNING] NSE warm-up (market page) failed: HTTPSConnectionPool(host='www.nseindia.com', port=443): Max retries exceeded with url: /market-data/live-equity-market (Caused by SSLError(SSLError(1, '[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1032)')))
+2026-05-29 17:34:57,325 [INFO] NSE session ready âœ…
+2026-05-29 17:34:57,358 [WARNING] NSE attempt 1/3 failed [marketStatus]: HTTPSConnectionPool(host='www.nseindia.com', port=443): Max retries exceeded with url: /api/marketStatus (Caused by SSLError(SSLError(1, '[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1032)')))
+2026-05-29 17:34:57,358 [INFO]   Retrying in 3sâ€¦
+2026-05-29 17:35:00,405 [WARNING] NSE attempt 2/3 failed [marketStatus]: HTTPSConnectionPool(host='www.nseindia.com', port=443): Max retries exceeded with url: /api/marketStatus (Caused by SSLError(SSLError(1, '[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1032)')))
+2026-05-29 17:35:00,405 [INFO]   Retrying in 6sâ€¦
+2026-05-29 17:35:06,456 [WARNING] NSE attempt 3/3 failed [marketStatus]: HTTPSConnectionPool(host='www.nseindia.com', port=443): Max retries exceeded with url: /api/marketStatus (Caused by SSLError(SSLError(1, '[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1032)')))
+2026-05-29 17:35:06,486 [WARNING] NSE attempt 1/3 failed [equity-stockIndices]: HTTPSConnectionPool(host='www.nseindia.com', port=443): Max retries exceeded with url: /api/equity-stockIndices?index=INDIA%20VIX (Caused by SSLError(SSLError(1, '[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1032)')))
+2026-05-29 17:35:06,487 [INFO]   Retrying in 3sâ€¦
+2026-05-29 17:35:09,526 [WARNING] NSE attempt 2/3 failed [equity-stockIndices]: HTTPSConnectionPool(host='www.nseindia.com', port=443): Max retries exceeded with url: /api/equity-stockIndices?index=INDIA%20VIX (Caused by SSLError(SSLError(1, '[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1032)')))
+2026-05-29 17:35:09,527 [INFO]   Retrying in 6sâ€¦
+2026-05-29 17:35:15,711 [WARNING] NSE attempt 3/3 failed [equity-stockIndices]: HTTPSConnectionPool(host='www.nseindia.com', port=443): Max retries exceeded with url: /api/equity-stockIndices?index=INDIA%20VIX (Caused by SSLError(SSLError(1, '[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1032)')))
+2026-05-29 17:35:15,821 [WARNING] NSE attempt 1/3 failed [allIndices]: HTTPSConnectionPool(host='www.nseindia.com', port=443): Max retries exceeded with url: /api/allIndices (Caused by SSLError(SSLError(1, '[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1032)')))
+2026-05-29 17:35:15,822 [INFO]   Retrying in 3sâ€¦
+2026-05-29 17:35:18,883 [WARNING] NSE attempt 2/3 failed [allIndices]: HTTPSConnectionPool(host='www.nseindia.com', port=443): Max retries exceeded with url: /api/allIndices (Caused by SSLError(SSLError(1, '[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1032)')))
+2026-05-29 17:35:18,884 [INFO]   Retrying in 6sâ€¦
